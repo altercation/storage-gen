@@ -1,0 +1,4 @@
+#!/usr/bin/env zsh
+SCRIPTROOT="${${SCRIPTPATH:=$(readlink -f $0)}:h:h}"
+[[ -f ${readme::=$SCRIPTROOT/README.md} ]] && rm -f $readme
+$SCRIPTROOT/${SCRIPTROOT:t} --readme > $readme
