@@ -1,0 +1,5 @@
+drive
+    partition --size 100
+        filesystem --noclobber
+    partition --noclobber
+        filesystem

@@ -1,0 +1,6 @@
+# Storage File Format Notes
+
+$RAM may be used to referent the ram size in system dynamically (e.g. will return 16G for 16 gigabyte system memory)
+
+labels BOOT or EFI will result in that partition being marked bootable
+(see BOOTABLE_LABELS list in the main atypical script)

@@ -1,0 +1,11 @@
+
+# Single device, unencrypted, pure btrfs, includes swap partition, no legacy boot, subvolumes for home, root, includes
+
+==========================================================================
+SIZE   CODE   LABEL       CHILD_OF    FSTYPE   MOUNT_POINT   MOUNT_OPTIONS
+--------------------------------------------------------------------------
+-      -      swap        -           swap     -             -
+-      -      system      -           btrfs    -             -
+-      -      root        system      btrfs    /             -
+-      -      home        system      btrfs    /home         -
+==========================================================================

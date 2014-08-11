@@ -1,0 +1,5 @@
+    partition --size 100 --label "My     unusual label"
+        filesystem
+            subvolume
+    partition
+        swap

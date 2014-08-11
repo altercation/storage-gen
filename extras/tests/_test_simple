@@ -1,0 +1,3 @@
+drive
+    partition --label "a     label with       spaces"
+        filesystem

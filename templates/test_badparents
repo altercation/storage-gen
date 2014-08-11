@@ -1,0 +1,3 @@
+drive --ssd
+    partition --size max
+        filesystem --mountpoint / --fstype btrfs

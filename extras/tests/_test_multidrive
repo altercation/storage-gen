@@ -1,0 +1,10 @@
+drive
+    partition --devpath /dev/sda2 --noclobber
+        filesystem --ssd
+    partition --label "My label    has spaces          in it"
+        filesystem --fstype btrfs
+drive
+    partition --size 100M
+        filesystem
+    partition
+        filesystem

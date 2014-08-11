@@ -1,0 +1,3 @@
+drive --ssd
+    partition --size max --noclobber
+        filesystem --mountpoint /

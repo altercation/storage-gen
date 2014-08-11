@@ -1,0 +1,438 @@
+# storage-gen
+
+
+**Name:** storage-gen 
+
+**Description:** Generate linux storage structures from minimal definition files 
+
+**Author:** Ethan Schoonover <es@ethanschoonover.com> 
+
+**Bug-Reports:** http://github.com/altercation/storage-gen/issues 
+
+### Summary: 
+
+storage-gen takes a *storage definition file* and processes it into valid 
+general purpose linux storage initialization commands for disk partitioning, 
+filesystem creation, encryption, etc. It performs basic validation and will 
+infer obvious values and sane defaults, unless instructed not to, and then gift 
+wraps the output as an executable script for review/use. There is also a useful 
+tree view output and live view. 
+
+### Requirements: 
+
+Init-storage expects certain linux utilities (lsblk, mount, mkfs.*) as well as 
+zsh. Why zsh? Init-storage was written primarily for use on new Arch Linux 
+installations, and zsh is the default shell on the Arch install medium. Zsh is 
+also a capable and well documented scripting language, albeit it one prone to 
+hieroglyphic like parameter expansions. 
+
+### Intended Systems: 
+
+Currently, storage-gen is designed for use on UEFI systems and targets the 
+creation of GPT partitioned disks. 
+
+### Usage Example: 
+
+Suppose you want to erase your drive, create a new btrfs file system for your 
+system root and also create a new, separate filesystem for your home directory. 
+ An storage-gen definition file for this might be: 
+
+    filesystem --fstype btrfs --size 30G --mountpoint / 
+    filesystem --mountpoint /home 
+
+### If this file was named "mystorage" you could then run storage-gen on it: 
+
+    storage-gen mystorage 
+
+And after being asked which of the available drives you wanted to use, the 
+following script would be output: 
+
+    #!/usr/bin/env zsh 
+    sgdisk --zap-all /dev/sda # erase everything! 
+    sgdisk --clear /dev/sda   # create new gpt structure 
+    sgdisk --new=0:0:+30G     # new partition 
+    sgdisk --largest-new=0    # new partition, fills remainder 
+    mkfs.ext4 /dev/sda1       # make a filesystem 
+    mkfs.ext4 /dev/sda2       # make a filesystem 
+    mount defaults,x-mount.mkdir/dev/sda1 /mnt      # mount filesystem 
+    mount defaults,x-mount.mkdir/dev/sda2 /mnt/home # mount filesystem 
+
+You could also ask to see a tree style output of the results. This is useful 
+while writing storage-definition files so you can confirm the results (for 
+example, with an editor in one terminal or virtual console and the tree view in 
+another). 
+
+    storage-gen --tree mystorage 
+
+Or the same without messages-- 
+
+    storage-gen --tree --quiet mystorage 
+
+
+
+Resulting in the following for a drive selection of /dev/sda-- 
+
+    drive devpath=/dev/sda 
+    │   
+    ├── partition size=30G devpath=/dev/sda1 
+    │   │   
+    │   └── filesystem fstype=btrfs mountpoint=/ 
+    │   
+    └── partition size=max devpath=/dev/sda2 
+        │   
+        └── filesystem fstype=ext4 mountpoint=/home 
+
+If we wanted do do the same, but use a value of /dev/sdb, without choosing it 
+manually we could either insert it into our file: 
+
+    drive --devpath=/dev/sdb 
+    filesystem --size 30G --mountpoint / 
+    filesystem --mountpoint /home 
+
+or we could append it to the command line using the --drives option which takes 
+a comma separated list of drives: 
+
+    storage-gen --drives /dev/sdb  mystorage 
+
+### Command Examples: 
+
+Note that several of these examples use the example storage definition file 
+named 'btrfs_simple'. This is only one example file. See other samples in the 
+'storage' subdirectory, or write your own. 
+
+**Examples:** Ways to reference the storage file - normal script output 
+
+    storage-gen filename-from-storage-subdirectory 
+    storage-gen ./relative/path/to/storage-definition-filename 
+    storage-gen /full/absolute/path/to/storage-definition-filename 
+    storage-gen http://url/of/file/to/download 
+
+**Example:** Show a minimal script output, no messages 
+
+    storage-gen --commentsoff --quiet btrfs_simple 
+
+**Example:** Live tree output with 'watch' 
+
+This is useful for split screen editing, with the storage definition file open 
+in an editor on one side and this live view in another. 
+
+    watch -cn1 'storage-gen --tree btrfs_simple' 
+
+**Example:** Save script file and show output together 
+
+    storage-gen btrfs_simple --output myinit --script 
+
+### Storage Definition File Example: 
+
+    drive --devpath /dev/sda 
+        partition --noclobber --devpath /dev/sda1 --mountpoint /boot 
+        filesystem --fstype btrfs --mountpoint / 
+
+See the $SCRIPTROOT/storage subdirectory for a list of prepared storage 
+definition files and further details on format.
+
+
+## Command Line Options
+
+`-f, --fstab `
+
+(not yet implemented)
+
+`-h, --help `
+
+Show this help information. Use --usage for expanded help.
+
+`-i, --ignore `
+
+Ignore live system environment. Disregards the current systems drive and 
+partition environment. Allows script to create output based on *only* the 
+provded template. Drives must either be set in the drive entries in the 
+template or using the --drives option. This allows creation of scripts that 
+don't match the current system configuration. This is different from full 
+environment simulation with the --debug and --debugsource options.
+
+`-k, --keep `
+
+Keep all existing partitions. Same as setting the --keep option on each drive. 
+Prevents existing partitions from being affected.
+
+`-m, --minify `
+
+No comments in the final script. Turns off all comments and blank lines in the 
+script output. Removing these does not change the functionality of the final 
+script.
+
+`-n, --noquery `
+
+Skip all interactive queries. Normal script execution results in queries for 
+drive and partition selection if those values have not been provided and cannot 
+be inferred otherwise. This skips those queries. Use this with the --yes option 
+to answer all yes/no queries with a default value.
+
+`-q, --quiet `
+
+No messages or warnings. Only display actual script (or tree) output, skip 
+informational messages (the informational messages will still be output in the 
+script itself unless the --commentsoff option is selected. With this option, a 
+single error message will be output to standard error if the script fails.
+
+`-s, --script `
+
+Always display script output. This happens by default UNLESS either the --tree 
+or --output options have been passed on the command line. In these cases, 
+passing the --script option restores the visual output of the script as well.
+
+`-t, --tree `
+
+Print tree diagram of output. After evaluating the storage template, a tree 
+relationship is displayed with colors indicating key values (unless --nocolors 
+has been used). Useful in combination with the something like `watch -cn1'. 
+This option precludes final script output unless either the --script or 
+--output options have also been provided.
+
+`-u, --usage `
+
+Displays detail usage information. Adds a summary of the types of options and 
+arguments that are valid for each storage type entry. Redirect to a file or 
+pipe through a pager such as less. See also the storage-gen README available in 
+the project git repository.
+
+`-C, --coloroff `
+
+Do not use colors in console output.
+
+`-D, --debug `
+
+Turn on debug tracking & always save debug log. This option turns on minimal 
+debug tracking and rolling script trace capture (in case of error). This has a 
+minimal performance impact so is normally off. The debug log is saved by by 
+default if the script encounters an error, and the debug file path will be 
+displayed in that case or with the use of this option. This debug file contains 
+the block device configuration and the original template file content. It may 
+be submitted with bug reports.
+
+`-I, --inferoff `
+
+Turn off inference of items (drives, partitions, defaults).
+
+`-M, --multipass `
+
+Output individual passphrase query blocks. If multiple encryption items exist 
+storage-gen normally creates a single passphrase query in the final executable 
+script. With this option, each encryption device without a preset passphrase 
+will receive a separate passphrase query step in the final script. Yes, it's a 
+multipass,
+
+`-N, --nomatch `
+
+Turn off match attempts for noclobber partitions. Normally, if a the 
+--noclobber option has been specified (or inherited) by a partition entry in 
+the storage template (or a partition implied by another entry), storage-gen 
+will make best effort to match it to an existing partition based on available 
+information in the template and on the system itself. See the --usage section 
+on matching for more information.
+
+`-R, --readme `
+
+Output usage in README markdown format.
+
+`-V, --valuesdump `
+
+Dump environment values in human readable format for debugging.
+
+`-W, --warnoff `
+
+Turn off warning query in script output.
+
+`-d, --drives '/dev/sdX,/dev/sdY'`
+
+List of drive paths to use in output. Force the use of drives from a comma 
+separated list, for example: --drives '/dev/sda' or --drives 
+'/dev/sda,/dev/sdc'. Drives will be assigned to missing devpath values in 
+storage definition file using these values, in order. If used in combination 
+with the --ignore option, then the drives listed do not need to exist on the 
+current system. If the --drives option is used without the --ignore option, 
+then the current system is checked for the presence of these drives first.
+
+`-o, --output OUTPUT_FILE_NAME`
+
+Optional output filename. If this option is provided, the final executable 
+script will be written to the path provided. If not set, script is displayed on 
+standard output and may be saved using redirection.
+
+`-r, --rootmount '/MOUNT/ROOT/PATH'`
+
+Preinstall mountpoint root path. Set mount root directory (if not set, use the 
+default '/mnt'). Argument is a valid, absolute path to an existing directory. 
+This path is used during system installation as a chroot  and is *not* recorded 
+in any fstab.
+
+`-S, --sourcedebug FILENAME`
+
+Simulate environment from debug file. storage-gen will read the captured debug 
+output from the provided file and use it to simulate a system environment. 
+Simulated values include the block device configuration and the original 
+template file content.
+
+`-T, --template TEMPLATE_FILE_PATH`
+
+Alternative syntax for source template. storage-gen normally uses arg 1 (the 
+first 'unnamed' argument) on the command line as the name (or path) of the 
+template to use. This option is merely a more explicit alternative to that.
+
+
+## Storage File Definition Overview
+
+
+### Storage Definition File - Valid Item Options (Fields)
+
+These are the options (fields) that are acceptable for each of the storage types. The 
+types listed are the only valid types (drive, partition, etc.).
+* `drive:` device ssd
+* `partition:` bootable code size partnum new keep replace label
+* `logical:` Not yet implemented
+* `encryption:` luksformat luksopen pass label encrypt
+* `swap:` label
+* `filesystem:` fstype mountpoint label
+* `subvolume:` mountpoint
+
+### Storage Definition File - Field Descriptions
+
+`--bootable `
+
+Identifies the storage item (drive, partition, filesystem) as a bootable 
+device. May not always impact the item initialization.
+
+`--encrypt `
+
+Used on storage items that may be children of encryption to imply an encryption 
+entry in the template file without adding it explicitly.
+
+`--keep `
+
+For drives, prevents any existing partitions from being removed, even without 
+explicitly identifying them with noclobber.
+
+`--noclobber `
+
+Prevents changes to the item that matches the devpath specified. For instance, 
+if --noclobber is set on a drive entry, and the path of the drive is identified 
+as /dev/sda, then no changes will be made to /dev/sda or any child elements of 
+/dev/sda.
+
+`--replace `
+
+For partitions, tries to match an existing partition based on partnum, devpath, 
+code, label or size and then creates a replacement command (deletes and then 
+recreates).
+
+`--ssd `
+
+Identifies a drive as an ssd (if no devpath is specified for a device, you will 
+be prompted to select a valid drive from a list and will also be prompted to 
+identify is as either a mechanical or ssd drive).
+
+`--code CODE`
+
+The partition GUID code as used by sgdisk. Can be either an sgdisk two-byte hex 
+code such as 'ef02', or a full GUID type code such as 
+'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7' (see 'man sgdisk' and 'sgdisk -L'). Note 
+that this is *not* a UUID.
+
+`--description 'DESCRIPTION'`
+
+A short description that can be reported during script execution. Currently not 
+utilized. Standard shell-script style comments prefixed by a # sign are also 
+acceptable in the storage definition file and will be ignored by the script.
+
+`--devpath /DEV/PATH`
+
+The device path, for instance /dev/sda for a drive, /dev/sda1 for a partition, 
+/dev/mapper/cryptvolume for an open luks device, etc. Not required. If no 
+devpath is specified for a drive, you will be prompted to select a valid drive 
+when the script executes.
+
+`--fstype FILESYSTEM-NAME`
+
+Filesystem types that this script knows about. Each fstype has a corresponding 
+'mkfs.*' command. Known filesystem types on this system include bfs btrfs 
+cramfs ext2 ext3 ext4 ext4dev fat jfs minix msdos reiserfs vfat xfs
+
+`--label 'ItemLabel'`
+
+A human readable label for a partition, filesystem, encrypted device, etc.
+
+`--luksformat 'OPTIONS LIST'`
+
+Enclose in single quotes. List of command line options applied by cryptsetup 
+when formatting a new dm-crypt device in LUKS mode. For example: --luksformat 
+'--cipher aes-xts-plain64 --key-size 256'  Safe defaults are applied if this is 
+absent.
+
+`--luksopen 'OPTIONS LIST'`
+
+Enclose in single quotes. List of command line options applied by cryptsetup 
+when opening a new or existing dm-crypt device in LUKS mode. For example: 
+--luksopen '--cipher aes-xts-plain64 --key-size 256' Safe defaults are applied 
+if this is absent.
+
+`--mkfsoptions 'OPTIONS LIST'`
+
+Enclose in single quotes. List of command line options applied to a filesystem 
+mkfs command when formatting.
+
+`--mountoptions MOUNT,OPTIONS`
+
+Comma separated list of options to apply to a specific storage device 
+containing a filesystem when mounting. Generally not required. For example, the 
+default mountoptions value applied to a btrfs filesystem is: '--force${label:+ 
+--label }${label:-}'  Note that use of other option values is possible by 
+simply using the variable form of the option name (e.g. '$label' for option 
+'--label'.
+
+`--mountpoint /MOUNT/POINT`
+
+The absolute path to the mountpoint for a storage item. If not set, then the 
+item will not be mounted!
+
+`--partitioning NOT YET IMPLEMENTED`
+
+Type of partitioning. Defaults to 'gpt'. Can be set to gpt, mbr, or btrfs.
+
+`--partnum PARTITION_NUMBER`
+
+This is automatically assigned but may also be specified manually on noclobber 
+partitions or on partitions you wish to manually control the order/partition 
+number of.
+
+`--pass PASSPHRASE`
+
+Passphrase for a encryption item. Insert obvious security warning about saving 
+passphrases in files here.
+
+`--preset PRESETNAME`
+
+Use a preset value for the given type. For example, the preset 'boot' for a 
+partition will set the type code, mountpoint, and size to specific values.
+
+`--size SIZE`
+
+Size of a partition. May be specified in either sgdisk friendly absolute size 
+format using the following suffixes: kibibytes (K), mebibytes (M), gibibytes 
+(G), tebibytes (T), or pebibytes (P), or may be a percentage value which will 
+use the specified percent of the *available* space on the drive (excluding any 
+partitions preserved using --noclobber) such as '30%'. You may also enter 'max' 
+as a value to use the maximum available (remaining) free space after all other 
+partitions have been assigned. Using the value 'ram' will similarly set the 
+partition size to match the install system memory, useful for partitions that 
+contain swap devices. Note that if a partition does contain a swap device 
+without a size value assigned to either, a size of 'ram' will be assigned by 
+default.
+
+`--type TYPE`
+
+Any of the valid storage device types. Unlike the other options in the fields 
+list, this is *not* specified with an extended option style '--' prefix. Rather 
+each line starts with the type word. Valid types: drive partition logical 
+encryption swap filesystem subvolume
+

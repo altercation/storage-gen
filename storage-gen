@@ -1,0 +1,4748 @@
+#!/usr/bin/env zsh
+
+SUMMARY=$(<< \
+'------------------------------------------------------------------------------'
+Name: storage-gen
+
+Description: Generate linux storage structures from minimal definition files
+
+Author: Ethan Schoonover <es@ethanschoonover.com>
+
+Bug-Reports: http://github.com/altercation/storage-gen/issues
+
+Summary:
+
+storage-gen takes a *storage definition file* and processes it into valid
+general purpose linux storage initialization commands for disk partitioning,
+filesystem creation, encryption, etc. It performs basic validation and will
+infer obvious values and sane defaults, unless instructed not to, and then
+gift wraps the output as an executable script for review/use. There is also
+a useful tree view output and live view.
+
+Requirements:
+
+Init-storage expects certain linux utilities (lsblk, mount, mkfs.*) as well
+as zsh. Why zsh? Init-storage was written primarily for use on new Arch Linux
+installations, and zsh is the default shell on the Arch install medium. Zsh
+is also a capable and well documented scripting language, albeit it one prone
+to hieroglyphic like parameter expansions.
+
+Intended Systems:
+
+Currently, storage-gen is designed for use on UEFI systems and targets the
+creation of GPT partitioned disks.
+
+Usage Example:
+
+Suppose you want to erase your drive, create a new btrfs file system for
+your system root and also create a new, separate filesystem for your home
+directory.  An storage-gen definition file for this might be:
+
+    filesystem --fstype btrfs --size 30G --mountpoint /
+    filesystem --mountpoint /home
+
+If this file was named "mystorage" you could then run storage-gen on it:
+
+    storage-gen mystorage
+
+And after being asked which of the available drives you wanted to use, the
+following script would be output:
+
+    #!/usr/bin/env zsh
+    sgdisk --zap-all /dev/sda # erase everything!
+    sgdisk --clear /dev/sda   # create new gpt structure
+    sgdisk --new=0:0:+30G     # new partition
+    sgdisk --largest-new=0    # new partition, fills remainder
+    mkfs.ext4 /dev/sda1       # make a filesystem
+    mkfs.ext4 /dev/sda2       # make a filesystem
+    mount defaults,x-mount.mkdir/dev/sda1 /mnt      # mount filesystem
+    mount defaults,x-mount.mkdir/dev/sda2 /mnt/home # mount filesystem
+
+You could also ask to see a tree style output of the results. This is
+useful while writing storage-definition files so you can confirm the
+results (for example, with an editor in one terminal or virtual console
+and the tree view in another).
+
+    storage-gen --tree mystorage
+
+Or the same without messages--
+
+    storage-gen --tree --quiet mystorage
+
+
+Resulting in the following for a drive selection of /dev/sda--
+
+    drive devpath=/dev/sda
+    │  
+    ├── partition size=30G devpath=/dev/sda1
+    │   │  
+    │   └── filesystem fstype=btrfs mountpoint=/
+    │  
+    └── partition size=max devpath=/dev/sda2
+        │  
+        └── filesystem fstype=ext4 mountpoint=/home
+
+If we wanted do do the same, but use a value of /dev/sdb, without choosing
+it manually we could either insert it into our file:
+
+    drive --devpath=/dev/sdb
+    filesystem --size 30G --mountpoint /
+    filesystem --mountpoint /home
+
+or we could append it to the command line using the --drives option which
+takes a comma separated list of drives:
+
+    storage-gen --drives /dev/sdb  mystorage
+
+Command Examples:
+
+Note that several of these examples use the example storage definition file
+named 'btrfs_simple'. This is only one example file. See other samples in
+the 'storage' subdirectory, or write your own.
+
+Examples: Ways to reference the storage file - normal script output
+
+    storage-gen filename-from-storage-subdirectory
+    storage-gen ./relative/path/to/storage-definition-filename
+    storage-gen /full/absolute/path/to/storage-definition-filename
+    storage-gen http://url/of/file/to/download
+
+Example: Show a minimal script output, no messages
+
+    storage-gen --commentsoff --quiet btrfs_simple
+
+Example: Live tree output with 'watch'
+
+This is useful for split screen editing, with the storage definition file
+open in an editor on one side and this live view in another.
+
+    watch -cn1 'storage-gen --tree btrfs_simple'
+
+Example: Save script file and show output together
+
+    storage-gen btrfs_simple --output myinit --script
+
+Storage Definition File Example:
+
+    drive --devpath /dev/sda
+        partition --noclobber --devpath /dev/sda1 --mountpoint /boot
+        filesystem --fstype btrfs --mountpoint /
+
+See the $SCRIPTROOT/storage subdirectory for a list of prepared storage
+definition files and further details on format.
+------------------------------------------------------------------------------)
+
+:<< \
+------------------------------------------------------------------------------
+MAIN EXECUTION
+run all __ functions in order after preloading entire script (and thus
+preloading all subsequent functions, traps, aliases)
+------------------------------------------------------------------------------
+(( ${(P)+${:-PRELOAD_${s::=${${0:t}//-/}}}} )) || { typeset PRELOAD_$s;
+. $(readlink -f $0); __MAIN $@; exit; }
+
+__MAIN () {
+
+    __processScriptOptions $@
+
+    track __initializeRulesets
+
+    ${HELP:-false}   && { __usage --minimal; exit 0 }
+    ${README:-false} && { __usage --readme; exit 0 }
+    ${USAGE:-false}  && { __usage ; exit 0 }
+
+    [[ -z $SOURCEDEBUG ]] || { # prepare for debugsource usage
+        [[ -f $SOURCEDEBUG ]] && {
+            . $SOURCEDEBUG
+            warn "\nUsing a simulated environment sourced using the
+            --debugsource option If the sourced environment differs from the
+            actual environment, resulting script will not be safe to execute
+            on this system."
+        } || {
+            fail "Unable to locate debug file '$SOURCEDEBUG'.
+                      Check filename/path."
+        }
+    }
+
+    [[ -n ${BLOCKENV:-} ]] || { # check for debugsource usage
+
+    track __captureEnvironment          \
+        --ignore_env        IGNORE      \
+        --output_array      BLOCKENV 
+
+    }
+
+    ${VALUESDUMP:-false} && {
+        debugDump --array BLOCKENV
+        exit 0
+    }
+
+    [[ -n ${FILERAW:-} ]] || { # check for debugsource usage
+
+    track __fileLocate \
+        --input_filepath    INPUTFILE   \
+        --output_filepath   SOURCEFILE  \
+        --tmpdir            SCRIPTTEMP  \
+        --debugmode         DEBUG       \
+        --root              SCRIPTROOT
+
+    track __fileRead                    \
+        --filepath          SOURCEFILE  \
+        --output_array      FILERAW   
+
+    }
+
+    track __fileClean                   \
+        --file_raw_array    FILERAW     \
+        --output_array      SOURCEDATA
+
+    track __fileConvertToArray          \
+        --fields_array      FIELDS      \
+        --input_array       SOURCEDATA  \
+        --output_array      STORAGE
+
+    track __inflateStructure            \
+        --storage_array     STORAGE     \
+        --fields_array      FIELDS      \
+        --values_array      VALUES      \
+        --ancestors_array   ANCESTORS   \
+        --descendants_array DESCENDANTS \
+        --equivalents_array EQUIVALENTS \
+        --inherit_array     INHERIT     \
+        --valid_array       VALID
+
+    track __assumeValues                \
+        --storage_array     STORAGE     \
+        --fields_array      FIELDS      \
+        --inherit_array     INHERIT     \
+        --valid_array       VALID       \
+        --infer_off_option  INFEROFF
+
+    track __scrubStructures             \
+        --storage_array     STORAGE     \
+        --children_array    CHILDREN    \
+        --required_array    REQUIRED    \
+        --siblings_array    SIBLINGS    \
+        --valid_array       VALID
+
+    track __printTree                   \
+        --input_array       STORAGE     \
+        --tree_option       TREE        \
+        --input_filename    INPUTFILE   \
+        --input_filepath    SOURCEFILE
+    exit
+    debugDump; exit
+
+    track __validateStructures          \
+        --children_array    CHILDREN    \
+        --required_array    REQUIRED    \
+        --siblings_array    SIBLINGS    \
+        --input_array       STORAGE     \
+        --valid_array       VALID
+
+    track __reorderPartitions           \
+        --input_array       STORAGE 
+
+    track __identifyDrives              \
+        --drives_array      DRIVES      \
+        --input_array       STORAGE     \
+        --blockenv_array    BLOCKENV    \
+        --noquery_env       NOQUERY     \
+        --ignore_env        IGNORE
+
+    track __identifyNoclobberPartitions \
+        --drives_array      DRIVES      \
+        --input_array       STORAGE     \
+        --blockenv_array    BLOCKENV    \
+        --noquery_env       NOQUERY     \
+        --ignore_env        IGNORE
+
+    track __identifyPartitions          \
+        --drives_array      DRIVES      \
+        --input_array       STORAGE     \
+        --blockenv_array    BLOCKENV 
+
+    track __identifyOtherDevicePaths    \
+        --input_array       STORAGE
+
+    track __genPayload                  \
+        --input_array       STORAGE     \
+        --outputvar         PAYLOAD     \
+        --sourcefile        SOURCEFILE  \
+        --infilename        INPUTFILE   \
+        --mountroot         MOUNTROOT   \
+        --multipass         MULTIPASS   \
+        --comments_option   MINIFY      \
+        --warning_option    WARNOFF
+
+    track __printTree                   \
+        --input_array       STORAGE     \
+        --tree_option       TREE        \
+        --input_filename    INPUTFILE   \
+        --input_filepath    SOURCEFILE
+
+    ((   $TREE          \
+    ||   $VALUESDUMP )  \
+    && ! $SCRIPT ) ||   {
+    track __payloadPrint                \
+        --input_array       PAYLOAD     \
+        --comments_option   MINIFY      }
+
+}
+
+__inflateStructure () {
+    . <(localopts           \
+        storage_array:      \
+        fields_array:       \
+        values_array:       \
+        ancestors_array:    \
+        descendants_array:  \
+        equivalents_array:  \
+        inherit_array:      \
+        valid_array:        )
+    isTypeValidForLineage () {
+        # is $check the same type as, or a valid relative type of $against?
+        typeset origopts; origopts="$@"
+        . <(localopts check: against: lineage: nullvalid samevalid)
+        [[ -n ${against:-} && -n ${lineage:-} ]] || {
+            fail "missing optargs in $0" }
+        [[ ${(U)lineage} =~ (ANCESTORS|DESCENDANTS) ]] || {
+            fail "bad lineage in $0" }
+        if ${nullvalid:-false} && ${samevalid:-false}
+        then
+            fail "Cannot set both nullvalid and samevalid options for $0"
+        fi
+        typeset -a valid_list
+        valid_list=(${(P)=${:-${(U)lineage}[$against]}:-})
+        [[ -n $check ]] || { ${nullvalid:-false} && {
+        return 0 } || return 1 }
+        [[ $check != $against ]] || { ${samevalid:-} && {
+        return 0 } || return 1 }
+        [[ -n ${(M)valid_list:#$check} ]] &&  {
+        return 0 } || return 1
+    }
+    # for ancestor loop
+    isSameOrDescendantType () {
+        isTypeValidForLineage \
+            --lineage descendants \
+            --samevalid \
+            --check "$1" \
+            --against "$2"
+    }
+    isNullOrAncestorType () {
+        isTypeValidForLineage \
+            --lineage ancestors \
+            --nullvalid \
+            --check "$1" \
+            --against "$2" || return 1
+        typeIsNotInAncestralLineageOfIndex \
+            $2 $3 && return 0 || return 1
+    }
+    typeIsNotInAncestralLineageOfIndex () {
+        # type is $1, index is $2
+        typeset index=${2%%,#[0-9]##}
+        while [[ -n ${index:-} ]]
+        do
+            getTypeByIndex --index $index --result type
+            [[ $type != $1 ]] || return 1
+            index=${index%%,#[0-9]##}
+        done
+        return 0
+    }
+    # for descendant loop
+    isSameOrAncestorType () {
+        isTypeValidForLineage \
+            --lineage ancestors \
+            --samevalid \
+            --check "$1" \
+            --against "$2"
+    }
+    isNullOrDescendantType () {
+        isTypeValidForLineage \
+            --lineage descendants \
+            --nullvalid \
+            --check "$1" \
+            --against "$2"
+    }
+    # equivalence is primarily for filesystem/swap which are
+    # of the equivalent level
+    isEquivalentType () {
+        typeset -a checklist checkvalue; checkvalue=($2)
+        checklist=(${(P)=${:-${equivalents_array}[$1]}:-})
+        [[ -n ${checklist:*checkvalue} ]]
+    }
+    getByIndex () {
+        # returns error if value is missing
+        # returns non error if value is set even
+        # if empty value
+        . <(localopts array: index: field: result:)
+        [[ -n ${index:-} && -n ${field:-} && -n ${array:-} ]] || {
+            fail "bad call to $0 - missing
+            ${index:-index }${field:-field }${array:-array}"
+        }
+        eval '(( ${+'$array'['$index,$field']} )) || { return 1 }'
+        [[ -z ${result:-} ]] || {
+        eval $result'="${'$array'[$index,$field]}"' }
+        return 0
+    }
+    noteByIndex () {
+        . <(localopts array: index: note:)
+        [[ -n ${array:-} && -n ${index:-} && -n ${note:-} ]] || \
+            fail "bad call to $0"
+        eval $array'[$index,notes]+="* ${${=note}}\n"'
+        teelog --category note --color cyan ${=note}
+    }
+    getTypeByIndex () {
+        . <(localopts index: result:)
+        [[ -n ${result:-} ]] || {
+            fail "bad call to $0 index ${index:-NULL}
+                result ${rsult:-NULL}" }
+        [[ -n ${index:-} ]] || return 1
+        getByIndex \
+            --array $storage_array \
+            --index $index \
+            --field type \
+            --result $result
+    }
+    # tag items with the required ancestor to ensure it is
+    # auto generated if not already present. this tag will
+    # then bubble up/out to it and be discarded
+    tagByIndex () {
+        . <(localopts index:)
+        typeset record_type
+        getTypeByIndex \
+            --index $index \
+            --result record_type
+        for tag_type in ${=VALUES[type]}
+        do
+            typeset -a type_list
+            type_list=(${(@)=CHILDREN[$tag_type]})
+            if [[ -n ${type_list:-} \
+               && -n ${(M)type_list:#$record_type} ]]
+            then
+                setByIndex \
+                    --array $storage_array \
+                    --index $index \
+                    --field $tag_type \
+                    --value ''
+                return
+            fi
+        done
+    }
+    tagLoop () {
+        . <(localopts start_at:)
+        typeset -a types
+        types=(${(P)=${:-${values_array}[type]}})
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        for record_index in $children
+        do
+            tagByIndex --index $record_index
+            $0 --start_at $record_index
+        done
+    }
+    tagLoop
+    inflateDrive () {
+        . <(localopts storage_array:)
+        [[ -n ${storage_array:-} ]] || fail "$0 missing storage_array"
+        # insert and indent all items, add drive
+        # (if no initial drive present)
+        if [[ ${(P)${:-${storage_array}[1,type]}} == drive ]]
+        then
+            return 0
+        fi
+        typeset -A STAGING; STAGING=()
+        typeset index
+        for index in ${(Pk)storage_array}
+        do
+            STAGING[1,$index]=${(P)${:-${storage_array}[$index]}}
+        done
+        STAGING[1,type]=drive
+        STAGING[1,auto]=""
+        eval $storage_array'=("${(@kv)STAGING}")'
+        noteByIndex \
+            --array $storage_array \
+            --index 1 \
+            --note "Made top level drive entry."
+    }
+    inflateDrive --storage_array $storage_array
+    inflateLoop () {
+        . <(localopts start_at:)
+        typeset -a types
+        types=(${(P)=${:-${values_array}[type]}})
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        for record_index in $children
+        do
+            makeActive $record_index
+            typeset record_type
+            record_type=${ACTIVE[type]}
+            typeset -a record_fields
+            record_fields=(${(k)ACTIVE})
+            typeset record_parent_index=${PARENT[index]:-}
+            typeset record_children_indexes="$(getChildren $record_index)"
+            # inner to outer for ancestors, outer to inner for descendants, thus
+            # order of creation is as close to current record type as possible
+            typeset -a \
+                valid_ancestor_types \
+                valid_descendant_types \
+                valid_record_fields
+            typeset rt=$record_type
+            valid_ancestor_types="${(O)${(@)types[1,(i)${rt}]}[1,-2]:-}"
+            valid_descendant_types="${${(@)types[${types[(i)$rt]},-1]}[2,-1]:-}"
+            valid_record_fields=(${(P)=${:-${valid_array}[$rt]}})
+            # check ancestors and descendants
+            typeset lineage make_new_record_test move_field_test
+            for lineage in ancestors descendants
+            do
+                if [[ $lineage == ancestors ]]
+                then
+                    # MOVE PARENT RECORD STUFF HERE
+                    typeset make_new_record_test=isNullOrAncestorType 
+                    typeset move_field_test=isSameOrDescendantType 
+                    typeset valid_lineage_types=$valid_ancestor_types
+                    typeset relative_list=$record_parent_index
+                    typeset relation=parent
+                    #typeset new_relative_index=$record_index
+                    typeset -a new_relative_index_e
+                    new_relative_index_e=('$record_index')
+                    typeset -a new_relative_cmd_e
+                    new_relative_cmd_e=('insertParent')
+                elif [[ $lineage == descendants ]]
+                then
+                    # SO WE CAN ADD CHILD STUFF HERE
+                    # AND LOOP OVER CHILD RECORDS
+                    typeset make_new_record_test=isNullOrDescendantType 
+                    typeset move_field_test=isSameOrAncestorType 
+                    typeset valid_lineage_types=$valid_descendant_types
+                    typeset relative_list=$record_children_indexes
+                    typeset relation=child
+                    #typeset new_relative_index=$record_index,1
+                    typeset -a new_relative_index_e
+                    new_relative_index_e=(
+                    '${relative_index:-$record_index,1}')
+                    typeset -a new_relative_cmd_e
+                    new_relative_cmd_e=(
+                    '${${relative_index:+insertParent}'
+                    ':-${relative_index:-insertSibling}}')
+                fi
+                # find the "rightful owner" types of fields which should be
+                # moved elsewhere
+                for rightful_owner_type in ${=valid_lineage_types}
+                do
+                    # no "common" valid array fields, since those are
+                    # automatically generated and would provide false
+                    # positives
+                    typeset -a rightful_owner_fields
+                    # rightful_owner_type is added as a pseudo-tag that will
+                    # be used to create required parents
+                    rightful_owner_fields=(
+                    ${(P)=${:-${valid_array}[$rightful_owner_type]}}
+                    $rightful_owner_type)
+                    # get fields that could be assigned to new/existing
+                    # records in the lineage of this current record. for example
+                    # if a filesystem has a --size value, that could (should) be
+                    # assigned to a partition, which is a valid type within the
+                    # lineage of filesystem.
+                    invalid_fields=${record_fields:*rightful_owner_fields}
+                    for invalid_field in ${=invalid_fields}
+                    do
+                        # it's possible that this field is valid for BOTH the
+                        # rightful_owner and for the current record type (e.g.
+                        # label) so just continue without removing it if that
+                        # is the case
+                        if [[ -n ${(M)valid_record_fields:#$invalid_field} ]]
+                        then
+                            # valid for check record but also for current record
+                            # so leave it where it is
+                            continue
+                        fi
+                        # MOVE/MAKE CHECK
+                        #
+                        # the :-"" below ensures that we loop once with a
+                        # null value if the list is otherwise empty
+                        #for relative_index in ${=relative_list:-""}
+                        # NOW: adding a null value always
+                        for relative_index in ${=relative_list:-} ''
+                        do
+                            typeset relative_type=""
+                            [[ -z ${relative_index:-} ]] || {
+                                getTypeByIndex \
+                                    --index $relative_index \
+                                    --result relative_type    }
+                            # CAN WE MOVE TO EXISTING?
+                            #
+                            # move value to EXISTING parent/child
+                            # (will bubble sort to proper parent/child or
+                            # eventually make a new record)
+                            if $move_field_test \
+                                "${relative_type:-}" \
+                                $rightful_owner_type
+                            then
+                                # if field exists on target record, skip
+                                getByIndex \
+                                    --array $storage_array \
+                                    --index $relative_index \
+                                    --field $invalid_field && continue
+                                typeset record_field_value
+                                getByIndex \
+                                    --array $storage_array \
+                                    --index $record_index \
+                                    --field $invalid_field \
+                                    --result record_field_value
+                                unsetByIndex \
+                                    --array $storage_array \
+                                    --index $record_index \
+                                    --field $invalid_field
+                                setByIndex \
+                                    --array $storage_array \
+                                    --index $relative_index \
+                                    --field $invalid_field \
+                                    --value "$record_field_value"
+                                noteByIndex \
+                                    --array $storage_array \
+                                    --index $record_index \
+                                    --note "Moved field $invalid_field from this
+                                            $record_type to ${lineage%s}
+                                            $relative_type (if not valid for
+                                            this field, will sort outwards from
+                                            this record to valid record or will
+                                            be removed)"
+                                return 1
+                            fi
+                            # CAN WE MAKE?
+                            #
+                            # if there is no parent/child or the current
+                            # parent/child is a valid ancestor/descendant of the
+                            # potential new record type (to be inserted between
+                            # the current record and its current parent/child)
+                            # then make a new parent
+                            typeset new_relative_index new_relative_cmd
+                            eval new_relative_index=${(j::)new_relative_index_e}
+                            eval new_relative_cmd=${(j::)new_relative_cmd_e}
+                            # child (depending on current ancestor/descendant
+                            # loop) new_relative_index is only used in this test
+                            # for ancestor lineage test
+                            if $make_new_record_test \
+                                "${relative_type:-}" \
+                                $rightful_owner_type \
+                                $new_relative_index
+                            then
+                                $new_relative_cmd \
+                                    --type $rightful_owner_type \
+                                    --array $storage_array \
+                                    --index $new_relative_index || {
+                                        fail "$new_relative_cmd failed with:\ntype:
+                                              $rightful_owner_type\nindex:
+                                              $new_relative_index" }
+                                tagByIndex --index $new_relative_index
+                                noteByIndex \
+                                    --array $storage_array \
+                                    --index $new_relative_index \
+                                    --note "Created $rightful_owner_type
+                                            $relation for $record_type due to
+                                            $invalid_field field."
+                                return 1
+                            fi
+                        done
+                    done
+                done
+            done
+            $0 --start_at $record_index
+        done
+    }
+    while ! inflateLoop; do :; done
+}
+__assumeValues () {
+    . <(localopts \
+        storage_array: \
+        fields_array: \
+        inherit_array: \
+        valid_array: \
+        infer_off_option:
+        )
+
+    ${(P)infer_off_option:-false} && return 0
+
+    assumeTypeSpecificValues () {
+        . <(localopts start_at:)
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        typeset index
+        for index in $children
+        do
+            makeActive $index
+            assumeFilesystemValues --storage_array $storage_array   || return 1
+            assumePartitionValues  --storage_array $storage_array   || return 1
+            $0 --start_at $index    || return 1
+        done
+    }
+
+    while ! assumeTypeSpecificValues; do :; done
+}
+assumeFilesystemValues () {
+    . <(localopts storage_array:)
+    if [[ ${ACTIVE[type]:-} == filesystem ]]
+    then
+
+        typeset field amatch
+
+        # missing mountpoint, fstype, from parent or ancestor
+        for field in mountpoint fstype
+        do
+            if [[ -z ${ACTIVE[$field]:-} ]]
+            then
+                if [[ -n ${PARENT[$field]:-} ]] && false
+                then
+                    setActive $field ${PARENT[$field]}
+
+                    noteByIndex \
+                        --array $storage_array \
+                        --index $ACTIVE[index] \
+                        --note "Moved $field field from ${PARENT[type]} parent"
+
+                    unset "${storage_array}[$PARENT[index],$field]"
+                    return 1
+                elif [[ -n ${amatch::=$(ancestorGetMatch $field)} ]]
+                then
+                    setActive $field ${(P)${:-${storage_array}[$amatch]}}
+                    atype=${(P)${:-${storage_array}[${amatch%$field}type]}}
+
+                    noteByIndex \
+                        --array $storage_array \
+                        --index $ACTIVE[index] \
+                        --note "Moved $field field from $atype ancestor"
+
+                    unset "${storage_array}[$amatch]"
+                    return 1
+                fi
+            fi
+        done
+
+        # missing fstype, infer from child
+        if [[ -z ${ACTIVE[fstype]:-} \
+           && ${(P)${:-${storage_array}[${ACTIVE[index]},1,type]}:-} \
+           == subvolume ]]
+        then
+            eval $storage_array'[$ACTIVE[index],fstype]=btrfs'
+            setActive fstype btrfs
+            noteByIndex \
+                --array $storage_array \
+                --index $ACTIVE[index] \
+                --note "Set fstype to btrfs due to subvolume child"
+            return 1
+        fi
+
+        # missing fstype, set default value
+        if [[ -z ${ACTIVE[fstype]:-} ]]
+        then
+            setActive fstype ext4
+            noteByIndex \
+                --array $storage_array \
+                --index $ACTIVE[index] \
+                --note "Set fstype to ext4 as default value for missing fstype field"
+            return 1
+        fi
+    fi
+    
+}
+assumePartitionValues () {
+    . <(localopts storage_array:)
+    if [[ ${ACTIVE[type]:-} == partition ]]
+    then
+        # missing size and is NOT noclobber
+        if [[ -z ${ACTIVE[size]:-} ]] && ${${ACTIVE[noclobber]+false}-true}
+        then
+
+            typeset dsizekey dsize dtype
+            typeset -a sibs
+
+            # check for swap descendant for use below
+            typeset -A types
+            : ${(AA)sizes::=${(Pkv)${:-${storage_array}[(I)${ACTIVE[index]},[0-9]##,type]}}}
+            typeset swap_descendant=${(k)sizes[(r)swap]%,type}
+
+            # try to get first available size from any descendant
+            dsizekey=${(Pk)${:-${storage_array}[(i)${ACTIVE[index]},*,size]}:-}
+            dsize=${(Pv)${:-${storage_array}[$dsizekey]}:-}
+            dtype=${(Pv)${:-${storage_array}[${dsizekey%%size}type]}:-}
+            if [[ -n ${dsize:-} ]]
+            then
+                setActive size $dsize
+                unsetActive warn
+                noteByIndex \
+                    --array $storage_array \
+                    --index $ACTIVE[index] \
+                    --note "Claimed size from ${dtype:-} descendant"
+                unset "${storage_array}[$dsizekey]"
+                return 1
+
+            # if there is a swap descendant, it lacks a size
+            # so we infer system ram size
+            elif [[ -n ${swap_descendant} ]]
+            then
+                setActive size ram
+                unsetActive warn
+                noteByIndex \
+                    --array $storage_array \
+                    --index $ACTIVE[index] \
+                    --note "Set missing size to match system ram due to swap
+                            descendant"
+                return 1
+
+            # else count other siblings, if we're alone then max
+            # (swap check must be before this)
+            elif [[ -z ${(A)sibs::=$(getOtherSiblings)} ]]
+            then
+
+                setActive size max
+                unsetActive warn
+                noteByIndex \
+                    --array $storage_array \
+                    --index $ACTIVE[index] \
+                    --note "Set paritition size to be maximum available free
+                            space as it is the only partition listed"
+                return 1
+
+            # check for conditition of all existing peers
+            else
+
+                typeset sib all_sibs_pass=true
+
+                # a noclobber sibling is assumed to have a size
+                # (we don't need to know it since we won't be
+                # creating the partition), so we check here for
+                # either noclobber or size. if all other partitions
+                # have at least one of these values then we can
+                # safely assume this single partition that is
+                # missing a value is a max size partition
+                for sib in $sibs
+                do
+                    # TODO: if I change noclobber checks to
+                    # be a function rather than preset parameter
+                    # lookup, then this will also change
+                    if ( ! isSet "${storage_array}[$sib,noclobber]" ) || 
+                       ( ! isSet "${storage_array}[$sib,size]" )
+                    then
+                    else
+                        # sibling item without noclobber or size found
+                        all_sibs_pass=false
+                        break
+                    fi
+                done
+
+                if $all_sibs_pass
+                then
+                    setActive size max
+                    unsetActive warn
+                    noteByIndex \
+                        --array $storage_array \
+                        --index $ACTIVE[index] \
+                        --note "Set partition size to use maximum available
+                                space on drive as all other partitions are
+                                either either fixed size or are noclobber"
+                    return 1
+                fi
+
+                # any other future all-sibling checks go here
+
+                # we drop out of this loop here with an implicit
+                # return 0 as we've now done our best to infer
+                # partition values
+                warn "Unable to infer a size value for partition $record"
+
+            fi
+
+        fi
+    fi
+}
+
+:<< \
+------------------------------------------------------------------------------
+END MAIN EXECUTION
+
+everything ABOVE comprises main script sequence, everything BELOW is processed
+prior to the __MAIN function (so all functions below are defined *prior* to
+__MAIN execution. This includes the script environment section immediately
+following this, which is within the same scope as the preload.
+------------------------------------------------------------------------------
+
+:<< \
+------------------------------------------------------------------------------
+SCRIPT ENVIRONMENT & DEFAULT VALUES
+
+this is the only section within same scope as the preload, everything else
+should be a function
+------------------------------------------------------------------------------
+
+setopt ERR_RETURN ERR_EXIT NO_UNSET GLOBAL_EXPORT EXTENDED_GLOB NULL_GLOB \
+       DEBUG_BEFORE_CMD TYPESET_SILENT #WARN_CREATE_GLOBAL
+       #TODO - clean up script using WARN_CREATE_GLOBAL
+
+zmodload zsh/regex zsh/zutil
+
+SCRIPTNAME="${${SCRIPTPATH:=$(readlink -f $0)}:t}"
+SCRIPTROOT="${SCRIPTPATH:h}"
+SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
+
+TRAPEXIT () { (( $status > 0 )) && DEBUG=true; trapcleanup; }
+TRAPZERR () {
+    teelog --category UNHANDLED_ERROR --color red "$(print -l -- ${ROLLING:-})"
+    DEBUG=true; trapcleanup
+    print "\n${COLOR[red]:-}Exit due to unhandled error." 1>&2; }
+trapcleanup  () {
+    [[ -z ${ROLLCALL:-} ]] || print -l -- "# "${^ROLLCALL} >> $DEBUGLOG
+    reportLog >> $DEBUGLOG
+    ${DEBUG:-false} && { mv $DEBUGLOG $DEBUGLOG_SAVE;
+    print "\n${COLOR[red]:-}Debug log saved to $DEBUGLOG_SAVE" 1>&2; } || :
+    [[ -d "${SCRIPTTEMP:-}" ]] && rm -rf "$SCRIPTTEMP"; }
+
+# Command line options
+#
+# The OPTS_* arrays below determine the actual processed options as well
+# as the help output. Each UPPERCASEOPTION is converted to a --lowercase
+# the command line value of which is assigned to the UPPERCASE parameter
+# name. Standard OPTS_* items are also set with a single letter short
+# form in lowercase (e.g. -l) unless they are in the *_ALT arrays, which
+# are set using uppercase short form (e.g. -U). *_ALT arrays contain
+# alternate options that are uppercased as single letter options (long
+# options remain lowercase as they are, or should be, unique).
+#
+# --help and --usage display the short and long options computed from the
+# arrays below. any *_ARG_* values (options with an argument) will output
+# with the first line of the description as the argument placeholder.
+# --help displays a brief version of each description consisting of the
+# first line only of item.
+
+typeset -Ag OPTS_BOOL OPTS_BOOL_ALT OPTS_ARGS OPTS_ARGS_ALT OPTS_ARGS_HIDDEN
+
+OPTS_BOOL=(
+
+HELP        "Show this help information.
+             Use --usage for expanded help."
+
+NOQUERY     "No queries, make best guesses.
+             Don't ask for any user input. Pick first obvious choices for the
+             user, for example use first available drives (internal or as
+             provided by the --drives option), automatically match partitions
+             when there is only one existing partition that matches the values,
+             etc. Best to run without this option first to see what happens."
+
+IGNORE      "Ignore live system environment.
+             Disregards the current systems drive and partition environment.
+             Allows script to create output based on *only* the provded
+             template. Drives must either be set in the drive entries in the
+             template or using the --drives option. This allows creation of
+             scripts that don't match the current system configuration.
+             This is different from full environment simulation with the
+             --debug and --debugsource options."
+
+KEEP        "Keep all existing partitions.
+             Same as setting the --keep option on each drive. Prevents
+             existing partitions from being affected."
+
+MINIFY      "No comments in the final script.
+             Turns off all comments and blank lines in the script output.
+             Removing these does not change the functionality of the final
+             script."
+
+QUIET       "No messages or warnings.
+             Only display actual script (or tree) output, skip informational
+             messages (the informational messages will still be output in the
+             script itself unless the --commentsoff option is selected. With
+             this option, a single error message will be output to standard
+             error if the script fails."
+
+SCRIPT      "Always display script output.
+             This happens by default UNLESS either the --tree or --output
+             options have been passed on the command line. In these cases,
+             passing the --script option restores the visual output of the
+             script as well."
+
+TREE        "Print tree diagram of output.
+             After evaluating the storage template, a tree relationship is
+             displayed with colors indicating key values (unless --nocolors
+             has been used). Useful in combination with the something like
+             \`watch -cn1\'. This option precludes final script output unless
+             either the --script or --output options have also been provided."
+
+NOQUERY     "Skip all interactive queries.
+             Normal script execution results in queries for drive and
+             partition selection if those values have not been provided and
+             cannot be inferred otherwise. This skips those queries. Use this
+             with the --yes option to answer all yes/no queries with a default
+             value."
+
+FSTAB       "(not yet implemented)"
+
+USAGE       "Displays detail usage information.
+             Adds a summary of the types of options and arguments that are valid
+             for each storage type entry. Redirect to a file or pipe through a
+             pager such as less. See also the $SCRIPTNAME README available in
+             the project git repository."
+
+)
+OPTS_ARGS=(
+
+DRIVES      "'/dev/sdX,/dev/sdY'
+             List of drive paths to use in output.
+             Force the use of drives from a comma separated list, for
+             example: --drives '/dev/sda' or --drives '/dev/sda,/dev/sdc'.
+             Drives will be assigned to missing devpath values in storage
+             definition file using these values, in order. If used in
+             combination with the --ignore option, then the drives listed
+             do not need to exist on the current system. If the --drives
+             option is used without the --ignore option, then the current
+             system is checked for the presence of these drives first."
+
+ROOTMOUNT   "'/MOUNT/ROOT/PATH'
+             Preinstall mountpoint root path.
+             Set mount root directory (if not set, use the default '/mnt').
+             Argument is a valid, absolute path to an existing directory.
+             This path is used during system installation as a chroot  and
+             is *not* recorded in any fstab."
+
+OUTPUT      "OUTPUT_FILE_NAME
+             Optional output filename.
+             If this option is provided, the final executable script will be
+             written to the path provided. If not set, script is displayed on
+             standard output and may be saved using redirection."
+
+)
+OPTS_BOOL_ALT=(
+
+DEBUG       "Turn on debug tracking & always save debug log.
+             This option turns on minimal debug tracking and rolling script
+             trace capture (in case of error). This has a minimal performance
+             impact so is normally off. The debug log is saved by by default
+             if the script encounters an error, and the debug file path will be
+             displayed in that case or with the use of this option. This debug
+             file contains the block device configuration and the original
+             template file content. It may be submitted with bug reports."
+
+README      "Output usage in README markdown format."
+
+COLOROFF    "Do not use colors in console output."
+
+INFEROFF    "Turn off inference of items (drives, partitions, defaults)."
+
+NOMATCH     "Turn off match attempts for noclobber partitions. Normally, if a
+             the --noclobber option has been specified (or inherited) by a
+             partition entry in the storage template (or a partition implied
+             by another entry), $SCRIPTNAME will make best effort to match it
+             to an existing partition based on available information in the
+             template and on the system itself. See the --usage section on
+             matching for more information."
+
+MULTIPASS   "Output individual passphrase query blocks.
+             If multiple encryption items exist $SCRIPTNAME normally creates a
+             single passphrase query in the final executable script. With this
+             option, each encryption device without a preset passphrase will
+             receive a separate passphrase query step in the final script.
+             Yes, it's a multipass,"
+
+VALUESDUMP  "Dump environment values in human readable format for debugging."
+
+WARNOFF     "Turn off warning query in script output."
+
+)
+OPTS_ARGS_ALT=(
+
+SOURCEDEBUG "FILENAME
+             Simulate environment from debug file.
+             $SCRIPTNAME will read the captured debug output from the provided
+             file and use it to simulate a system environment. Simulated values
+             include the block device configuration and the original template
+             file content."
+
+TEMPLATE    "TEMPLATE_FILE_PATH
+             Alternative syntax for source template.
+             $SCRIPTNAME normally uses arg 1 (the first 'unnamed' argument) on
+             the command line as the name (or path) of the template to use.
+             This option is merely a more explicit alternative to that."
+
+)
+
+:<< \
+------------------------------------------------------------------------------
+Main Sequence Functions
+------------------------------------------------------------------------------
+__processScriptOptions () {
+
+    typeset command_line="$SCRIPTNAME $*"
+
+    # run zparseopts on all defined script options
+    eval zparseopts -D -E -- \
+    ${(k)OPTS_BOOL//(#b)(*)/${${(L)=match}:0:1}=$match -${(L)match}=$match} \
+    ${(k)OPTS_BOOL_ALT//(#b)(*)/${${(U)=match}:0:1}=$match -${(L)match}=$match} \
+    ${(k)OPTS_ARGS//(#b)(*)/${${(L)=match}:0:1}:=$match -${(L)match}:=$match} \
+    ${(k)OPTS_ARGS_ALT//(#b)(*)/${${(U)=match}:0:1}:=$match -${(L)match}:=$match}
+
+    # clean up the parsed options and assign to variables matching their names
+    # (so that TESTMODE, for example. receives a true/false value, DRIVES
+    # receives and array value, etc.)
+    eval typeset -g \
+    ${(k)OPTS_BOOL//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-false}} \
+    ${(k)OPTS_BOOL_ALT//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-false}}
+    eval typeset -ag ${(k)OPTS_ARGS}
+    eval ${(k)OPTS_ARGS//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
+    eval ${(k)OPTS_ARGS_ALT//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
+
+    # the input file can be set by --input or arg 1
+    typeset -g INPUTFILE=${INPUT:-${1:-}}
+
+    # initializeScriptParameters
+    # Make sure we have user specified or default mountroot directory
+    typeset m="${MOUNTROOT:-}"
+    # we're going to either assign or reassign as a scalar and it comes
+    # in as an array from our options processing
+    # so unset first, then assign existing or default value
+    # TODO: this could be a one liner if I unset inside an assignment
+    # or possibly if I force set?
+    unset MOUNTROOT; typeset -g MOUNTROOT="${m:-/mnt}"
+    [[ ${MOUNTROOT} =~ "/" ]] || MOUNTROOT="${$(pwd)%/}/${MOUNTROOT}"
+    [[ -d ${MOUNTROOT} ]] || {
+        __usage
+        fail "ERROR: Mountroot directory $MOUNTROOT not found."
+        }
+
+    # Convert DRIVES values from csv
+    [[ -n ${DRIVES:-} ]] && { DRIVES=(${=${(s:,:)DRIVES}}) }
+
+    if ! ${COLOROFF:-false}; then
+        typeset -Ag COLOR COLOR
+        autoload colors; colors
+        for color in ${(k)fg_no_bold}; do
+            COLOR[$color]=${fg_no_bold[$color]}
+            COLOR[$color,bold]=${fg_bold[$color]}
+        done
+    else
+        unset COLOR
+    fi
+
+    # debug log and a path to move it to if script fails
+    # (so don't make user re run with --debug on a bad error)
+    # DLHOST=${SCRIPTNAME}${${(%)${:-%D}}//-/}.debug
+    # DLTIME=${SCRIPTNAME}${HOST:+-}${HOST:-}.debug
+    typeset -g DEBUGLOG_BASE=${SCRIPTNAME}.debug
+    typeset -g DEBUGLOG_SAVE=/tmp/$DEBUGLOG_BASE
+    typeset -g DEBUGLOG=$SCRIPTTEMP/$DEBUGLOG_BASE
+    if [[ -e $DEBUGLOG_SAVE ]]
+    then
+        rm -f $DEBUGLOG_SAVE || \
+        fail "Cannot remove existing debug log at $DEBUGLOG_SAVE"
+    fi
+    # prep debug log header
+    typeset -a debug_log_header
+    debug_log_header=(
+    "# ${(U)SCRIPTNAME} DEBUG LOG"
+    "# DATE:         $(date)"
+    "# RUN AS:       ${${(M)USERNAME:#root}:-non-root}"
+    "# ZSH VERSION:  $ZSH_VERSION"
+    "# COMMAND LINE: $command_line"
+    "# SUBMIT TO:    $SCRIPTNAME@ethanschoonover.com\n"
+    "typeset -gA BLOCKENV"
+    "typeset -ga FILERAW"
+    )
+    print -l -- $debug_log_header > $DEBUGLOG
+
+    ${DEBUG:-false} && {
+    print "ROLLING TRACKING ON"
+        typeset -ag ROLLING
+        TRAPDEBUG () {
+            for i in {1..4}
+            do
+                ROLLING[$i]=${ROLLING[$((i+1))]:-}
+            done
+            ROLLING[5]=$ZSH_DEBUG_CMD;
+        }
+    } || {
+    track () { eval $@ }
+    }
+
+}
+__initializeRulesets () {
+
+    typeset -Ag FIELDS VALID VALUES CHILDREN SIBLINGS OPTIONS REQUIRED \
+        ITEMOPTIONS_BOOL ITEMOPTIONS_SCAL DESCRIPTION PRESET CODES INHERIT \
+        CONFLICTS EQUIVALENTS ANCESTORS DESCENDANTS
+
+    # the types of storage devices we know about
+    # ORDER IS IMPORTANT. Items to the left are *potential* ancestors of items
+    # to the right
+    VALUES[type]="drive partition logical encryption swap filesystem subvolume"
+
+    # known fstypes and short GUID codes TODO: replace the code list
+    # with the fixed list below, which includes translation to long codes
+    VALUES[fstype]=${${=${listing::=$(print ${:-=mkfs}.*)}}##$(print =mkfs).}
+    VALUES[code]=${(uM)${:-$(sgdisk -L)}:#([0-9]|[a-f])(#c4)}
+    print "\n# fstypes present via mkfs: ${(@)VALUES[fstype]}" >> $DEBUGLOG
+
+    # the fields which are valid for each storage item type
+    # with 'common' fields being valid for all types
+    # these are checked AFTER inheritance and conversions for final
+    # validity, and are use DURING inheritance to determine which
+    # type inherits which fields
+    VALID=(
+    common      "notes auto"
+    drive       "device ssd"
+    encryption  "luksformat luksopen pass label encrypt"
+    filesystem  "fstype mountpoint label"
+    logical     ""
+    partition   "bootable code size partnum new keep replace label"
+    subvolume   "mountpoint"
+    swap        "label"
+    )
+
+#    conversions:
+#    drive: label -> partlabel
+#    swap: label -> swaplabel+partlabel
+#    part: label -> partlabel
+#    enc:  label -> lukslabel
+#    fs:   label -> lukslabel
+#    subvolume: label -> fslabel
+
+#OR just leave them as is, make parents and move them if necessary, just being
+#sure to work from inside out for labels
+
+#    any -> device to split device and partnum
+#
+#    code to -> longcode or shortcode?
+
+#   IF these are all unique, then the presence of any item on a
+#   child or parent could imply the presence of the inverse (parent or child)
+#   TRUE?
+#   e.g. a filesystem with a code clearly implies a partition
+#   similarly a filesystem with a passphrase implies encryption
+#   thus the imply step is simplified to:
+#       if there are any invalid fields, make the parent of this item
+#       for which they are valid (regardless of whether the parent is
+#       a valid parent or child of existing parent...). if we do this
+#       from outer potential to inner potential, we create a correct
+#       nest. i.e. a swap with a partnum AND pass value creates a partition
+#       then encryption. It is important that somewhere we have an ordered
+#       list of outer to inner.
+#       (the VALUES[type] list is now correct)
+#   generation:
+#   encrypt -> encryption parent
+#   lukslabel: luks parent
+#   partlabel: part parent
+#   partnum: part parent
+
+# OR better... during the inheritance, if field is ALSO valid for the source
+# record then just... copy it? maybe with some translation or suffix rule?
+
+# for example, what happens when subvolume has a label? it should go up to filesystem parent
+
+# what happens when a drive has a label? does it imply anything? a partition, probably.
+
+# in the case of keep or replace partitions, some data will come from the
+# existing partition, at least for keep partitions we can get the partition
+# label, and maybe the filesystem label?
+    
+    # the fields which are required for each storage item type
+    # some of these will either be inferred or set as defaults,
+    # but this list is used for validity check
+    REQUIRED=(
+    common      ""
+    drive       ""
+    encryption  ""
+    filesystem  "fstype"
+    logical     ""
+    partition   "size"
+    subvolume   ""
+    swap        ""
+    )
+
+    # migrated these to logic, may need to move them back here TODO
+    DEFAULTS=(
+    common      ""
+    drive       ""
+    encryption  ""
+    filesystem  ""
+    logical     ""
+    partition   ""
+    subvolume   ""
+    swap        ""
+    )
+
+    # Inheritable values
+    # inheritance retains the value on the source record (if it is valid)
+    # else it claims it from the source. this is only attempted if the
+    # field is valid for the record in question.
+    INHERIT=(
+    up          "ssd bootable replace keep"
+    down        "ssd keep"
+    any         "device partnum fstype size mountpoint code devpath"
+    )
+
+    # values that are invalid on the same entry
+    CONFLICTS=(
+    keep        "replace"
+    )
+
+#    # when analyzing descendants and ancestors, make the following
+#    # peers (i.e. a swap cannot have a filesystem or subvolume as
+#    # a descendant, a filesystem cannot have a swap as a descendant)
+#    # 
+#    # could remove this check here by building up a list of ancestors
+#    # and descendants using the CHILDREN array (probably a better
+#    # method, long term, since the changes are only made in one place)
+#    # TODO
+#    EQUIVALENTS=(
+#    swap        "filesystem subvolume"
+#    filesystem  "swap"
+#    )
+
+    # the valid child device types for a given device type
+    CHILDREN=(
+    drive       "partition filesystem"
+    encryption  "filesystem swap"
+    filesystem  "subvolume"
+    logical     ""
+    partition   "encryption filesystem swap"
+    subvolume   "subvolume"
+    swap        ""
+    )
+
+    # default parent values
+    PARENTS=(
+    drive       ""
+    encryption  "partition"
+    filesystem  "partition"
+    logical     ""
+    partition   "drive"
+    subvolume   "filesystem"
+    swap        ""
+    )
+
+    # multiple siblings of the following type are subsumed by a single parent
+    # (when said parent is absent)
+    # this needs to be addressed by the make step in inflation
+    MULTI=(
+    drive       ""
+    encryption  ""
+    filesystem  ""
+    logical     ""
+    partition   "drive"
+    subvolume   "filesystem"
+    swap        ""
+    )
+
+    # the valid sibling device types for a given device type
+    SIBLINGS=(
+    drive       "drive"
+    encryption  ""
+    filesystem  ""
+    logical     ""
+    partition   "partition"
+    subvolume   "subvolume"
+    swap        ""
+    )
+
+    # compile lists of valid descendants per type
+    # (base on CHILDREN and VALUES)
+    compileValidDescendants () {
+        getChildTypes () {
+            typeset child
+            for child in ${=CHILDREN[$1]}
+            do
+                print $child
+                [[ $child != $1 ]] && getChildTypes $child
+            done
+        }
+        print ${(u):-$(getChildTypes $1)}
+    }
+    for type in ${=VALUES[type]}
+    do
+        DESCENDANTS[$type]=$(compileValidDescendants $type)
+    done
+
+    # compile lists of valid ancestors per type
+    # (base on CHILDREN and VALUES)
+    compileValidAncestors () {
+        # use order of values to ensure outer-to-inner order
+        getParentTypes () {
+            typeset type parent
+            typeset -a parents
+            # from inner to outer
+            for type in ${(Oa)=VALUES[type]}
+            do
+                if [[ -n ${CHILDREN[$type]:-} && \
+                      -n ${(M)${=CHILDREN[$type]}:#$1} ]]
+                then
+                    parents+=($type)
+                fi
+            done
+            print $parents
+            for parent in ${=parents}
+            do
+                [[ $parent != $1 ]] && getParentTypes $parent
+            done
+        }
+        # from outer to inner
+        print ${(Oau):-$(getParentTypes $1)}
+    }
+    for type in ${=VALUES[type]}
+    do
+        ANCESTORS[$type]=$(compileValidAncestors $type)
+    done
+
+
+    # options used during filesystem/luks/swap format/mount/open/activate
+    OPTIONS=(
+
+    "# mkfs"        "options that will be applied to various mkfs commands
+                     based on fstype, ssd"
+
+    mkfs            ''
+    mkfs,ssd        ''
+    mkfs,btrfs      '--force${label:+ --label ${(q-)label:-}}'
+    mkfs,btrfs,ssd  '--metadata single' # see man mkfs.btrfs
+    mkfs,vfat       '-F32 ${label:+ -n }${label:-}'
+
+    "# mount"       "options that will be applied to mount command based on
+                     fstype, ssd values"
+
+    mount           'defaults,x-mount.mkdir'
+    mount,ssd       'noatime'
+    mount,btrfs     'compress=lzo,space_cache,autodefrag,inode_cache'
+    mount,btrfs,ssd 'ssd,discard'
+
+    "# swap"        "swap and ssd specific options"
+
+    swap            ''
+    swap,ssd        '--discard'
+
+    "# LUKS"        "both luks formatting and option options"
+
+    luks,format     ''
+    luks,open       ''
+    luks,open,ssd   '--allow-discards'
+
+    )
+
+    # --force-password below allows weak passphrases (for testing only)
+    if ${FORCE:-false} || ${TEST:-false}; then
+        OPTIONS[luks,format]='--force-password'
+    fi
+
+    # TODO: all presets at this point will be for partitions, though we can stick
+    # fstype, etc. info into them if we want to push out filesystems
+    # alternately, preset could be a new type
+    # e.g. preset biosboot
+    # or   preset --name biosboot
+    # i like this less since it's not obvious to the user reading the template
+    # that it's a partition
+    # better to do:
+    # partition --preset biosboot
+    # the --preset values should be appended AFTER all other values in the line
+    # that way anything else will override the presets
+    # e.g.
+    # partition --preset biosboot --label 'my custom label'
+    # would expand to
+    # partition --preset biosboot --label 'my custom label' --size 1M --code ef02
+    #   --label 'BIOS Boot Partition'
+    # and only the first label would be used. that way user doesnt worry about
+    # location of override values. this is essentially how i handles defaults.
+
+    PRESET=(
+    biosboot                    "--size 1M
+                                 --code ef02
+                                 --label 'BIOS Boot Partition'"
+
+    efisys                      "--mountpoint /boot/efi
+                                 --size 200M
+                                 --code ef00
+                                 --label 'EFI System Partition'"
+
+    linuxboot                   "--mountpoint /boot
+                                 --size 200M
+                                 --code 8300
+                                 --label 'Linux Boot Partition'"
+
+    existing-windows-recovery   "--noclobber
+                                 --code 2700"
+
+    existing-linux-home         "--mountpoint /boot
+                                 --size 200M
+                                 --code 8300
+                                 --label 'Linux Boot Partition'"
+    )
+    ITEMOPTIONS_BOOL=(
+
+    bootable        "Identifies the storage item (drive, partition,
+                     filesystem) as a bootable device. May not always impact
+                     the item initialization."
+
+    encrypt         "Used on storage items that may be children of encryption
+                     to imply an encryption entry in the template file
+                     without adding it explicitly."
+
+    keep            "For drives, prevents any existing partitions from being
+                     removed, even without explicitly identifying them with
+                     noclobber."
+
+    noclobber       "Prevents changes to the item that matches the devpath
+                     specified. For instance, if --noclobber is set on a drive
+                     entry, and the path of the drive is identified as
+                     /dev/sda, then no changes will be made to /dev/sda or any
+                     child elements of /dev/sda."
+
+    replace         "For partitions, tries to match an existing partition based
+                     on partnum, devpath, code, label or size and then creates
+                     a replacement command (deletes and then recreates)."
+
+    ssd             "Identifies a drive as an ssd (if no devpath is specified
+                     for a device, you will be prompted to select a valid drive
+                     from a list and will also be prompted to identify is as
+                     either a mechanical or ssd drive)."
+    )
+    ITEMOPTIONS_SCAL=(
+
+    code            "CODE
+                     The partition GUID code as used by sgdisk. Can be either
+                     an sgdisk two-byte hex code such as 'ef02', or a full GUID
+                     type code such as 'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7'
+                     (see 'man sgdisk' and 'sgdisk -L'). Note that this is *not*
+                     a UUID."
+
+    description     "'DESCRIPTION'
+                     A short description that can be reported during script
+                     execution. Currently not utilized. Standard shell-script
+                     style comments prefixed by a # sign are also acceptable in
+                     the storage definition file and will be ignored by the
+                     script."
+
+    devpath         "/DEV/PATH
+                     The device path, for instance /dev/sda for a drive,
+                     /dev/sda1 for a partition, /dev/mapper/cryptvolume for an
+                     open luks device, etc. Not required. If no devpath is
+                     specified for a drive, you will be prompted to select a
+                     valid drive when the script executes."
+
+    fstype          "FILESYSTEM-NAME
+                     Filesystem types that this script knows about. Each fstype
+                     has a corresponding 'mkfs.*' command. Known filesystem
+                     types on this system include ${(@)VALUES[fstype]}"
+
+    label           "'ItemLabel'
+                     A human readable label for a partition, filesystem,
+                     encrypted device, etc."
+
+    luksformat      "'OPTIONS LIST'
+                     Enclose in single quotes. List of command line options
+                     applied by cryptsetup when formatting a new dm-crypt
+                     device in LUKS mode. For example:
+
+                     --luksformat '--cipher aes-xts-plain64 --key-size 256'
+                     
+                     Safe defaults are applied if this is absent."
+
+    luksopen        "'OPTIONS LIST'
+                     Enclose in single quotes. List of command line options
+                     applied by cryptsetup when opening a new or existing
+                     dm-crypt device in LUKS mode. For example:
+
+                     --luksopen '--cipher aes-xts-plain64 --key-size 256'
+
+                     Safe defaults are applied if this is absent."
+
+    mkfsoptions     "'OPTIONS LIST'
+                     Enclose in single quotes. List of command line options
+                     applied to a filesystem mkfs command when formatting."
+
+    mountoptions    "MOUNT,OPTIONS
+                     Comma separated list of options to apply to a specific
+                     storage device containing a filesystem when mounting.
+                     Generally not required. For example, the default
+                     mountoptions value applied to a btrfs filesystem is:
+
+                     '--force\${label:+ --label }\${label:-}'
+                     
+                     Note that use of other option values is possible by
+                     simply using the variable form of the option name (e.g.
+                     '\$label' for option '--label'."
+
+    mountpoint      "/MOUNT/POINT
+                     The absolute path to the mountpoint for a storage item.
+                     If not set, then the item will not be mounted!"
+
+    partitioning    "NOT YET IMPLEMENTED
+                     Type of partitioning. Defaults to 'gpt'. Can be set to
+                     gpt, mbr, or btrfs."
+
+    partnum         "PARTITION_NUMBER
+                     This is automatically assigned but may also be specified
+                     manually on noclobber partitions or on partitions you wish
+                     to manually control the order/partition number of."
+
+    pass            "PASSPHRASE
+                     Passphrase for a encryption item. Insert obvious security
+                     warning about saving passphrases in files here."
+
+    preset          "PRESETNAME
+                     Use a preset value for the given type. For example, the
+                     preset 'boot' for a partition will set the type code,
+                     mountpoint, and size to specific values."
+
+    size            "SIZE
+                     Size of a partition. May be specified in either sgdisk
+                     friendly absolute size format using the following
+                     suffixes: kibibytes (K), mebibytes (M), gibibytes (G),
+                     tebibytes (T), or pebibytes (P), or may be a percentage
+                     value which will use the specified percent of the
+                     *available* space on the drive (excluding any partitions
+                     preserved using --noclobber) such as '30%'. You may also
+                     enter 'max' as a value to use the maximum available
+                     (remaining) free space after all other partitions have
+                     been assigned. Using the value 'ram' will similarly set
+                     the partition size to match the install system memory,
+                     useful for partitions that contain swap devices. Note
+                     that if a partition does contain a swap device without
+                     a size value assigned to either, a size of 'ram' will be
+                     assigned by default."
+
+    type            "TYPE
+                     Any of the valid storage device types. Unlike the other
+                     options in the fields list, this is *not* specified with
+                     an extended option style '--' prefix. Rather each line
+                     starts with the type word. Valid types: ${(@)VALUES[type]}"
+
+    )
+
+    # fields that are valid for use. not all valid for all storage types.
+    FIELDS[boolean]=${(k)ITEMOPTIONS_BOOL}
+    FIELDS[scalar]="${(k)ITEMOPTIONS_SCAL}"
+
+    # partition GUID global type code lookup table
+    # (translate from sgdisk two byte codes to full GUID)
+    # this is not exhaustive
+    # cf http://sourceforge.net/p/gptfdisk/code/ci/master/tree/parttypes.cc
+    # cf http://www.freedesktop.org/wiki/Specifications/DiscoverablePartitionsSpec/
+    # cf http://www.freedesktop.org/software/systemd/man/systemd-gpt-auto-generator.html
+    # cf http://en.wikipedia.org/wiki/GUID_Partition_Table
+    # cf http://www.sepago.de/e/nicholas/2012/07/25/windows-recovery-environment-re-explained
+    # cf http://technet.microsoft.com/en-us/library/dd744301(v=ws.10).aspx
+
+    CODES=(
+    0100,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-12"
+    0400,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16 < 32M"
+    0600,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16"
+    0700,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - NTFS (or HPFS)"
+    0b00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-32"
+    0c00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-32 LBA"
+    0c01,E3C9E316-0B5C-4DB8-817D-F92DF00215AE "Microsoft reserved"
+    0e00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16 LBA"
+    1100,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-12"
+    1400,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16 < 32M"
+    1600,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16"
+    1700,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden NTFS (or HPFS)"
+    1b00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-32"
+    1c00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-32 LBA"
+    1e00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16 LBA"
+    2700,DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "Windows RE"
+    8200,0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "Linux swap"
+    8300,0FC63DAF-8483-4772-8E79-3D69D8477DE4 "Linux filesystem"
+    8301,8DA63339-0007-60C0-C436-083AC8230908 "Linux reserved"
+    8302,933AC7E1-2EB4-4F13-B844-0E14E2AEF915 "Linux /home"
+    8303,44479540-F297-41B2-9AF7-D131D5F0458A "Linux x86 root (/)"
+    8304,4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709 "Linux x86-64 root (/)"
+    8305,B921B045-1DF0-41C3-AF44-4C6F280D3FAE "Linux ARM64 root (/)"
+    8306,3B8F8425-20E0-4F3B-907F-1A25A76F98E8 "Linux /srv"
+    8e00,E6D6D379-F507-44C2-A23C-238F2A3DF928 "Linux LVM"
+    ab00,426F6F74-0000-11AA-AA11-00306543ECAC "Apple boot"
+    af00,48465300-0000-11AA-AA11-00306543ECAC "Apple HFS/HFS+"
+    af01,52414944-0000-11AA-AA11-00306543ECAC "Apple RAID"
+    af02,52414944-5F4F-11AA-AA11-00306543ECAC "Apple RAID offline"
+    af03,4C616265-6C00-11AA-AA11-00306543ECAC "Apple label"
+    af04,5265636F-7665-11AA-AA11-00306543ECAC "AppleTV recovery"
+    af05,53746F72-6167-11AA-AA11-00306543ECAC "Apple Core Storage"
+    ea00,BC13C2FF-59E6-4262-A352-B275FD6F7172 "Freedesktop BOOT"
+    ed00,F4019732-066E-4E12-8273-346C5641494F "Sony system partition"
+    ed01,BFBFAFE7-A34F-448A-9A5B-6213EB736C22 "Lenovo system partition"
+    ef00,C12A7328-F81F-11D2-BA4B-00A0C93EC93B "EFI System"
+    ef01,024DEE41-33E7-11D3-9D69-0008C781F39F "MBR partition scheme"
+    ef02,21686148-6449-6E6F-744E-656564454649 "BIOS boot partition"
+    fd00,A19D880F-05FC-4D3B-A006-743F0F84911E "Linux RAID"
+    )
+
+    # generate short and long code lookup/reverse lookups
+    CODES+=(
+    ${(k)=CODES//,/ }
+    ${(k)=CODES//(#b)(#s)(*),(*)(#e)/$match[2] $match[1]}
+    )
+    
+}
+__captureEnvironment () {
+    # creates an array with keys formatted similarly to:
+    # output_array[/dev/sda1,mountpoint]
+    . <(localopts ignore_env: output_array: debug_file:)
+
+    ${(P)ignore_env:-false} && return 0
+
+    typeset -Ag $output_array
+    typeset -A STAGING
+    typeset -T lsblk_fields_list lsblk_fields ','
+    lsblk_fields=(
+        LABEL
+        MODEL
+        MOUNTPOINT
+        NAME
+        PARTLABEL
+        RM
+        RO
+        SIZE
+        TYPE
+        UUID
+        VENDOR
+        )
+    for line in ${"${(@f)$(lsblk -Pp -o $lsblk_fields_list)}"}
+    do
+        STAGING=(${(0)line//(#m)[[:WORD:]]##=/${(#):-0}${MATCH%=}${(#):-0}})
+        typeset devname=${(Q)STAGING[NAME]%% #}
+        unset "STAGING[NAME]"
+        typeset key="" value=""
+        for key in ${(k)STAGING}
+        do
+            if [[ -n ${${value::=${(Q)STAGING[$key]%% #}}%0} ]]
+            then
+                eval $output_array'[$devname,${(L)key}]=$value'
+            fi
+        done
+    done
+
+    # get existing partition codes
+    if [[ $USERNAME == root ]]
+    then
+
+        # list of available partitions on system
+        # (first set all_types, then pull out the partitions)
+        typeset -A all_types 
+        : ${(AA)all_types::=${(Pkv)${:-${output_array}[(I)*type]}}}
+        typeset -a all_partitions
+        all_partitions=(${(k)all_types[(R)part]%,type})
+
+        typeset longcode short_code
+        for partition in $all_partitions
+        do
+            # if sgdisk chokes on the disk, skip it
+            if sgdisk ${partition%%[0-9]#} &>/dev/null
+            then
+                longcode=${${:-"$(sgdisk -i${(M)partition%%[0-9]#} ${partition%%[0-9]#})"}//(#b)*GUID code: ([^[:space:]]##)*/$match}
+                eval $output_array'[$partition,longcode]=${(u)longcode}'
+                [[ -n ${shortcode::=${CODES[$longcode]:-}} ]] && \
+                    eval $output_array'[$partition,shortcode]=${(u)shortcode}'
+            fi
+        done
+    else
+        warn "Skipping partition code inferrence as script is not being run as root.
+              If run as root, $SCRIPTNAME will use sgdisk to infer --noclobber
+              partition matches based on codes if present. This is non-critical."
+    fi
+
+    debugCapture BLOCKENV
+}
+__fileLocate () {
+
+    # takes a filename, relative path, absolute path, or url, returns a local,
+    # absolute file path (either discovered or downloaded) with an exit code
+    # of 1 for failure. the zsh sublist below first checks for a remote file
+    # and downloads it if that is the  case, then tries to just source the
+    # file as give (so either in the PWD or an absolute path or a valid
+    # relative path), and if that fails, it then looks in the scriptroot and
+    # recursive subdirectories for a match, finally returning an exit code 1
+    # if it fails.
+
+    . <(localopts input_filepath: output_filepath: tmpdir: root: debugmode:)
+
+    typeset -a r s
+
+    # if no file has been supplied
+    if [[ -z ${(P)input_filepath:-} ]]
+    then
+        # if we are in debug output mode then dump environment
+        if ${(P)debugmode:-false}
+        then
+            alert "No input file supplied, saving system environment only due
+            to --debug mode being set." 1>&2
+            exit 0
+        # otherwise show minimal usage
+        else
+            __usage --minimal
+            alert "Storage definition filename, path or URL required.
+                        See the ${SCRIPTROOT}/storage-patterns subdirectory."
+            exit 0
+        fi
+    elif [[ ${(P)input_filepath} =~ "(http|ftp)s?:.*" ]]
+    then
+         curl -sL "$input_filepath" \
+              -o ${res::=${tmpdir%/}/${input_filepath:t}} || res=""
+    elif [[ ! -f "${res::=${(P)input_filepath:a}}" ]]
+    then
+         [[ -f "${res::=${r[${s[(i)${${(o@)${(@A)s::=${(@)${(fA)r::=$(\
+             print -l \
+             ${(P)root}/***/${(P)input_filepath}(.onOd:A))}//[^\/]/}}}[1]}]:-}]:-}}" ]]\
+             || res=""
+    fi
+    # at this point will have a result if we were able
+    # otherwise fail
+    if [[ -n "$res" ]]; then
+        eval typeset -g $output_filepath="$res"
+        report "Using source file $res"
+    else
+        fail "Failed to locate file ${(P)input_filepath}"
+    fi
+}
+__fileRead () {
+    . <(localopts filepath: output_array: )
+    typeset -ag $output_array
+    eval $output_array'=("${(@f)$(< ${(P)filepath})}")'
+    debugCapture $output_array
+}
+__fileClean () {
+    # convert storage definition file from supplied format to one ready for
+    # further conversion to array of records. removes all comments, merges
+    # escaped newlines, etc. converts types (drive, partition to optargs,
+    # records indentation level for later processing.
+    . <(localopts file_raw_array: output_array: )
+
+    # note that without the noted comment strip :# removal below,
+    # we have a problem with files that have trailing comments
+    typeset -a e
+    typeset counter=${(#):-29}
+    e=(
+    ': '
+    '${(AP)output_array::='
+    '${'
+    '${'
+    '${'
+    '${'
+    '${(s:; :j: :)'
+    '${'
+    '${(@Z+C+)'
+    '${(F)'
+    '${'$file_raw_array':#[[:blank:]]#\#*}' '# added a comment strip here'
+    '#${'$file_raw_array'}'                 '# original'
+    '//(#b)'
+    '(#s)'
+    '( #)'
+    '/${(l.${#match[1]}..'$counter'.):-}'
+    '}}}}'
+    '//(#b)'
+    '(#s)'
+    '('$counter'#)'
+    '(*)'
+    '/'
+    '${match[2]} '
+    '--indent '
+    '${#match[1]}}'
+    '//'$counter'/}'
+    '//(#s)'
+    '\#*(#e)/}'
+    '//(#s)'
+    '/--type }}'
+    )
+    eval ${(j..)e:#\#*}
+}
+__fileConvertToArray () {
+    . <(localopts \
+            input_array:    \
+            output_array:   \
+            fields_array:   \
+            previous_index: \
+            previous_indent:)
+
+    typeset -Ag $output_array
+
+    # write staging array if this is our first call to the function
+    # (treat input as immutable)
+    if ! (( ${+previous_index} )); then
+        unset STAGING # in case used in other functions clean up if they didn't
+        typeset -ag STAGING
+        eval 'STAGING=("${(@)'$input_array'}")'
+        input_array=STAGING
+    fi
+
+    typeset -a bool; bool=(${(P)=${:-${fields_array}[boolean]}})
+    typeset -a scal; scal=(${(P)=${:-${fields_array}[scalar]}})
+    typeset -a opts; opts=(${bool} ${scal})
+
+    typeset index
+    typeset -i sibling_index
+
+    while ${${(P)input_array:+true}:-false}; do # process array line by line
+
+        eval set -- ${(P)${input_array}[1]};
+        . <(localopts ${bool} ${^scal}: indent:)
+
+        #typeset leftovers
+        #leftovers="${*:-NULL}"
+
+        if (( $indent > ${previous_indent:=$indent} )); then # child, recurse
+
+            $0 --input_array $input_array \
+                --output_array $output_array \
+                --fields_array $fields_array \
+                --previous_index $index \
+                --previous_indent $indent
+            
+        elif (( $indent == $previous_indent )); then # valid sibling; process
+
+            # generate index path (e.g. 1,2,1) for array subscript
+            index=${previous_index:-}${previous_index:+,}$((++sibling_index))
+
+            # warn if anything is left over, but don't fail
+            if [[ -n ${leftovers:-} ]]; then
+
+                alert "Unknown option/argument values for item type '$type'
+                      encountered while reading storage definition file:
+                      ${leftovers} This is non-critical."
+
+                # If the beginning of the leftovers match an option name
+                # suggest that the user forgot the -- prefix
+                if [[ "${leftovers:-}" =~ (^(${(j:|:)~opts}).*) ]]; then
+                    alert "Did you forget the -- prefix to specify the option
+                        name?\nIf so, try changing it to: --$*\n" 1>&2
+                fi
+
+            fi
+
+            # TODO: re-set optargs and process them here, since
+            # we are scraping the o value output of localopts, a
+            # really bad way to do this. better to iterate over opts
+            eval set -- ${(P)${input_array}[1]};
+            . <(localopts ${bool} ${^scal}: indent:)
+            typeset leftovers="${@:-}"
+            # assign values to storage array (this assigns all of them)
+            params='${=${:-${(@)^${(@M)${(@k)o##-#}//(#m)(*)/${output_array}'
+            params+='[${index}${index:+,}${MATCH}]${MATCH:+=}${(q)o[--'
+            params+='${MATCH}]#=}}};}//typesetNULL/typeset }' 
+
+            eval ${(e)params}
+
+            # strip indent values (could be in a pattern above as well)
+            # to normalize test output (indent value compute may change)
+            eval 'unset "${:-${output_array}[$index,indent]}"'
+
+            # remove first item in array since we have assigned it to
+            # output_array
+            eval $input_array'[1]=()';
+
+        else # return from recursion or function
+            return 0
+        fi
+    done
+
+    # remove unrequired indent values
+    # (this doesn't need to be eval'd but it was screwing up syntax
+    # highlighting otherwise... TODO
+
+}
+__inferMissingElements () {
+    . <(localopts \
+        input_array: \
+        fields_array: \
+        inherit_array: \
+        valid_array: \
+        infer_off_option:
+        )
+
+    ${(P)infer_off_option:-false} && return 0
+
+    # nonzero exit status breaks us out of the loops until
+    # all inferences pass without making changes.
+    # this is not the optimal solution as race conditions
+    # can occur if the tests were to revert previous changes,
+    # but it's ok for now...
+
+    inferDrive
+
+    inferRecords () {
+        . <(localopts start_at:)
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        typeset index
+        for index in $children
+        do
+            makeActive $index
+            inferParentPartition     || return 1
+            inferParentEncryption    || return 1
+            inferParentFilesystem    || return 1
+            inferChildFilesystem     || return 1
+            $0 --start_at $index     || return 1
+        done
+    }
+
+    inferInheritedValues () {
+        . <(localopts start_at:)
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        typeset index
+        for index in $children
+        do
+            makeActive $index
+            #inferNoclobber         || return 1
+            #inferSsd               || return 1
+            inferClaimFromDescendant || return 1
+            inferInheritUp          || return 1
+            inferInheritDown        || return 1
+            $0 --start_at $index    || return 1
+        done
+    }
+
+    inferTypeSpecificValues () {
+        . <(localopts start_at:)
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        typeset index
+        for index in $children
+        do
+            makeActive $index
+            inferFilesystemValues   || return 1
+            inferPartitionValues    || return 1
+            $0 --start_at $index    || return 1
+        done
+    }
+
+    while ! inferRecords; do :; done
+    while ! inferInheritedValues; do :; done
+    while ! inferTypeSpecificValues; do :; done
+}
+__reorderPartitions () {
+    # move any --size max partition to end of siblings
+    # so that it is made last by partitioning command
+    # placing this last in the list as there could be
+    # conflicts with other inferences
+    . <(localopts input_array:)
+
+    reorderLoop () {
+        . <(localopts start_at:)
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        typeset index
+        for index in $children
+        do
+            makeActive $index
+
+            if [[ ${ACTIVE[type]} == partition ]]
+            then
+
+                # we don't care which partition, just that we are at
+                # partition level
+                if (( ${(MPv)#${:-${input_array}[(I)${ACTIVE[index]%%[0-9]#}[0-9]##,size]}:#max}>1 ))
+                then
+                    fail "Multiple partitions with 'max' size, but only
+                        one allowed. Please check --size assignments."
+                fi
+
+                typeset -A sizes
+                : ${(AA)sizes::=${(Pkv)${:-${input_array}[(I)${ACTIVE[index]%%[0-9]#}[0-9]##,size]}}}
+                # partition that has the max value
+                max_part_index=${(k)sizes[(r)max]%,size}
+
+                # last partition in the list
+                max_sib_index=${${${(On)${${(Pk)${:-${input_array}[(I)${ACTIVE[index]%%[0-9]#}[0-9]##,type]}%,type}//,/${(#):-0}}}//${(#):-0}/,}[1]}
+
+                # loop through all records in max partition branch
+                # and move to a new maximum value index
+                new_final_index=${max_sib_index%%[0-9]#}$((${(M)max_sib_index%%[0-9]#} + 1))
+                typeset old_index
+                for old_index in ${(P)${:-${input_array}[(I)${max_part_index},*]}}
+                do
+                    new_index=${new_final_index}${old_index#${max_part_index}}
+                    eval $input_array'[$new_index]=${'$input_array'[$old_index]}'
+                    unset "${input_array}[$old_index]"
+                done
+
+                return 0
+
+            fi
+
+            $0 --start_at $index
+
+        done
+    }
+    reorderLoop
+}
+__scrubStructures () {
+    . <(localopts storage_array: values_array:)
+    typeset record
+    for record in ${STORAGE[(I)*,(${(j:|:)${=VALUES[type]}}|notes)]}
+    do
+        unset "STORAGE[$record]"
+    done
+}
+__validateStructures () {
+
+    . <(localopts \
+            input_array: children_array: siblings_array: required_array: \
+            valid_array: pindex:)
+
+    typeset -a children
+    children=($(getChildren ${pindex:-}))
+
+    for record in $children; do
+
+        makeActive $record
+
+        # run parent-child validity checks if we have a parent value
+        if [[ -n ${pindex:-} ]]; then
+
+            # check that this item's parent has this type as a valid child
+            if ! valueInListOrListAbsent \
+                "${:-${children_array}[${PARENT[type]:-}]}" ${ACTIVE[type]}
+            then
+
+                fail "Type '${ACTIVE[type]}' invalid child of type
+                        '${PARENT[type]}'";
+
+            fi
+
+            # check for subvolume parent fstype, making it btrfs if missing
+            if [[ ${ACTIVE[type]} == subvolume \
+                && ${PARENT[type]:-} == filesystem \
+                && ${PARENT[fstype]} != btrfs ]]
+            then
+
+                fail "Filesystem parent of subvolume must have --fstype
+                        btrfs, but is currently ${PARENT[fstype]}."
+
+            fi
+
+        fi
+
+        # check that this item has no prohibited siblings
+        for sibling in $(getOtherSiblings $record)
+        do
+            stype=${(P)${:-${input_array}[$sibling,type]}:-}
+            valueInListOrListAbsent \
+                "${:-${siblings_array}[${ACTIVE[type]}]}" $stype || {
+                fail "'${ACTIVE[type]}' is not a valid sibling of type 
+                          '${PARENT[type]}'" }
+        done
+
+        # get list of actual fields
+        fields_actual=${(P)${:-${input_array}[(I)$record,[^0-9]##]}#$record,}
+
+        # check that all existing fields for this type are valid
+        validfields=(
+            ${(P)=${:-${valid_array}[common]}}
+            ${(P)=${:-${valid_array}[${ACTIVE[type]}]}}
+            )
+        for field in ${${=fields_actual}:#type}
+        do
+                #"${valid_array}[${ACTIVE[type]}]" $field || {
+            valueInList validfields $field || {
+                fail "'$field' is not a valid field of type 
+                          '${ACTIVE[type]}'. Run $SCRIPTNAME with the
+                          --allhelp option to review valid options types"
+                        }
+        done
+
+        # check that all required fields for this type exist
+        if ! activeIsSet noclobber; then
+            for field in ${(P)=${:-${required_array}[${ACTIVE[type]}]}:-}
+            do
+                valueInList \
+                    fields_actual $field || {
+                    fail "Required field '$field' for type '${ACTIVE[type]}'
+                            is missing!"
+                        }
+            done
+        fi
+
+        # if type is filesystem and !noclobber, must have fstype so that we
+        # can make it. otherwise no fstype is required as we're just going
+        # to mount and can at least give it a go without fstype
+        if [[ ${ACTIVE[type]} == filesystem && -z ${ACTIVE[fstype]:-} ]] \
+            && ! activeIsSet noclobber; then
+
+            fail "Filesystem is missing --fstype option. This would be ok
+                    if the filesystem had the --noclobber option (for an
+                    existing filesystem that you wish to mount) but in this
+                    case it looks like you want to make a new filesystem, so
+                    we need to know what type."
+
+        fi
+
+        # every partition that is !noclobber must have a size at this point
+        if [[ ${ACTIVE[type]} == partition && -z ${ACTIVE[size]:-} ]] \
+            && ! activeIsSet noclobber; then
+
+            fail "Partition is missing --size option. This would be ok if
+                    the partition had the --noclobber option (for an
+                    existing partition that you wish to mount) but in this
+                    case it looks like you want to make a new partition, so
+                    we need to know what size"
+
+        fi
+
+        # every partition that is !noclobber must have a size at this point
+        if [[ ${ACTIVE[type]} == partition \
+            && -z ${ACTIVE[devpath]:-} \
+            && -z ${ACTIVE[partnum]:-} ]] \
+            && activeIsSet noclobber; then
+
+            alert "Noclobber partition entry ${record##*,} under drive
+            ${record%%,*} has no --devpath or --partnum; will try to match
+            using other values (code, label, size if available) or through
+            user query."
+
+        fi
+
+        # validate size field value
+        if [[ -n ${ACTIVE[size]:-} ]] && ! activeIsSet noclobber
+        then
+
+            if ! [[ ${(U)ACTIVE[size]} =~ ^([0-9]*[KMGTP%]|RAM|MAX)$ ]]
+            then
+                fail "Improperly formatted --size value. ${ACTIVE[type]}
+                --size value set to ${ACTIVE[size]} but must be a value similar
+                to: '200M', '100G', '50%', 'max' or 'ram'. Valid unit suffixes
+                include: 'K' (kibibytes), 'M' (mebibytes), 'G' (gibibytes), 'T'
+                (tebibytes), or 'P' pebibytes, or may be '%' for percentage
+                values. Use 'max' to indicate that the partition should fill
+                the maximum available free space on the drive after all other
+                partitions have been assigned. Use ram to set the value to
+                the amount of installed system ram."
+            fi
+
+        fi
+
+        # if item has both a devpath and partnum (unnecessary) then they
+        # must not conflict
+        if [[ -n ${ACTIVE[devpath]:-} && -n ${ACTIVE[partnum]:-} ]]
+        then
+            if [[ ${(M)ACTIVE[devpath]%%[0-9]#} != ${ACTIVE[partnum]} ]]
+            then
+                fail "${ACTIVE[type]} has both a --devpath and --partnum
+                value set and they don't match. Only one is necessary,
+                generally partnum (the drive devpath can be specified on a
+                parent 'drive' entry and the partnum will be applied to it)."
+            fi
+
+        fi
+
+        # recurse into children of this child
+        $0 --input_array $input_array \
+            --children_array $children_array \
+            --siblings_array $siblings_array \
+            --valid_array $valid_array \
+            --required_array $required_array \
+            --pindex $record
+
+    done
+}
+__recordsArrayAddDrivePaths () {
+    # recursively add any missing drive paths
+    # query for new/missing paths as required
+    . <(localopts input_array: pindex: earmarked: drives_array:)
+    typeset -a children
+    children=($(getChildren ${pindex:-}))
+
+    for record in $children; do
+
+        makeActive $record
+
+        # if this is a drive, then make sure we have an available device path
+        # or query for a selection.
+        if [[ ${ACTIVE[type]} == drive ]]; then
+
+            # check if we have a devpath from the storage file
+            if [[ -n ${ACTIVE[devpath]:-} ]]; then
+
+                # check if recorded path is valid, unmounted drive
+                # if not, report problem and offer to pick new one or quit
+                if ! driveIsUnmounted ${ACTIVE[devpath]:-}; then
+
+                    shrinkWrap "Drive device path listed in storage
+                    definition file is either already mounted or missing.
+                    If you wish to pick a new drive now, press 'y'.
+                    Otherwise press 'n' to exit and review current drive
+                    mounts and device availability with lsblk and mount.
+                    \nPress y to select new drive, any other key to quit."
+
+                    read -qs || { print "Quitting."; exit }
+
+                    # still here, user wants to pick a different drive
+                    # so remove current devpath
+                    eval $input_array'[$record,devpath]=""'
+                    makeActive $record
+
+                elif [[ ${+earmarked} == 1 ]] && \
+                    valueInList earmarked ${ACTIVE[devpath]}; then
+
+                    shrinkWrap "Drive device path listed in storage
+                    definition file has already been selected for another
+                    drive. If you wish to pick a new drive now, press 'y'.
+                    Otherwise press 'n' to exit and review current drive
+                    mounts and device availability with lsblk and mount.
+                    \nPress y to select new drive, any other key to quit."
+
+                    read -qs || { print "Quitting."; exit }
+
+                    # still here, user wants to pick a different drive
+                    # so remove current devpath
+                    eval $input_array'[$record,devpath]=""'
+                    makeActive $record
+
+                fi
+
+            fi
+
+            # at this point we have a null devpath or an existing path
+            # so if null, pick new one
+            if [[ -z ${ACTIVE[devpath]:-} ]]; then
+
+                # get drive
+                typeset newdrive="";
+                driveQuery  --outvar newdrive \
+                    --drives_array $drives_array \
+                    ${earmarked:+--earmarked }${earmarked:-}
+                # make sure we remember that this newly picked drive
+                # is unavailable for further selection
+                earmarked+=" $newdrive"
+
+                # barring unforeseen disaster, we have a valid drive devpath
+                if [[ -z ${(P)${${input_array}[$record,devpath]}:-} ]]; then
+                    if [[ -n ${newdrive:-} ]]; then
+                        eval $input_array'[$record,devpath]=${newdrive}'
+                    else
+                        shrinkWrap "Failed to set --devpath value for drive!"
+                        exit 1
+                    fi
+                fi
+
+            fi
+        fi
+
+        $0 --input_array $input_array --pindex $record \
+            ${earmarked:+--earmarked }${earmarked:-}
+
+    done
+}
+__identifyDrives () {
+    # sets drive devpaths in the storage array based on:
+    #   1. value submitted on command line using --drives value
+    #      (csv list of one or more)
+    #   2. value in source definition file (warn if value isn't a
+    #      valid, actual drive)
+    #   3. queried value (with values autoaccepted if option set)
+
+    . <(localopts drives_array: blockenv_array: input_array: ignore_env: noquery_env:)
+
+    typeset -A env_staging
+    env_staging=("${(@Pkv)blockenv_array}")
+    
+    typeset -A types_actual
+    : ${(AA)types_all::=${(kv)env_staging[(I)*type]}}
+
+    typeset -A mountpoints_actual
+    : ${(AA)mountpoints_all::=${(kv)env_staging[(I)*mountpoint]}}
+
+    # list of available drives on system
+    typeset -a drives_all
+    drives_all=(${(k)types_all[(R)disk]%,type})
+
+    # list of mounted devices trimmed down to drive paths
+    typeset mounted_drives
+    mounted_drives=(${(k)mountpoints_all%[0-9]##,mountpoint})
+
+    # list of external drives
+    typeset external_drives
+    external_drives=(${(k)env_staging[(I)*rm]%,rm})
+
+    # list of available unmounted drives
+    typeset available_drives
+    available_drives=(${drives_all:|mounted_drives})
+
+    # drives that were provides via the --drives cli option
+    typeset -a command_line_drives
+    command_line_drives=(${(P)drives_array})
+
+    # first order children are all drives
+    typeset drive
+    for drive in $(getChildren)
+    do
+
+        makeActive $drive
+        typeset selected=""
+
+        # list of internal, available drives for auto-selection
+        # if the --noquery option has been set on the command line
+        # inside the drive selection loop so that any previously selected
+        # drives are removed from the list
+        typeset internal_available_drives
+        internal_available_drives=(${available_drives:|external_drives})
+
+        # array for use in matches below
+        typeset -a devpath
+        devpath=(${ACTIVE[devpath]:-})
+
+        # use command line values if present
+        if (( ${#command_line_drives} > 0 ))
+        then
+
+            if [[ -z ${available_drives:*devpath} ]]
+            then
+
+            fi
+            # check if in available drives...
+            # if not then fail unless warnonly has been set
+            #    in which case simply warn and proceed
+            # if so then use and remove from list of available drives
+
+            selected=${command_line_drives[1]}
+            unset "${command_line_drives}[1]"
+            available_drives=("${(@)available_drives:#$selected}")
+
+            if [[ -n ${devpath} && ${devpath} != $selected ]] \
+                && ! ${(P)ignore_env:-false}
+            then
+                warn "Note that the assignment based on the command line
+                    --drives option has overridden the file provided value
+                    of $devpath. If this is not what you intended, either
+                    run this again without the --drive command line option
+                    or remove/revise the --devpath value for drive $drive
+                    in the storage definition file."
+            fi
+
+            setActive devpath $selected
+            appendActiveInferred "Assigned drive $drive a device path value of
+                $selected as provided on the command line."
+
+        # if we have an existing devpath, check it and warn only if not valid
+        elif [[ -n $devpath ]]
+        then
+
+            setActive devpath $devpath
+
+            if [[ -z ${available_drives:*devpath} ]]
+            then
+                msg="Warning: --devpath value of drive $drive ($devpath) is not
+                    among the available, unmounted drives on this system."
+                if ! ${(P)ignore_env:-false}; then
+                    fail "$msg You may: 1) re-run this script with the
+                    --ignore command line option to disregard the actual system
+                    environment 2) revise the storage definition file, for
+                    example by removing the --devpath value or replacing it
+                    with a valid drive path."
+                fi
+                alert "$msg $SCRIPTNAME will continue but any output will not be
+                    immediately executable."
+            fi
+
+            available_drives=("${(@)available_drives:#$devpath}")
+
+        # devpath missing, auto-assign if no-query is set
+        # fail if there are no more actual drives to query
+    elif ${(P)noquery_env:-false} && [[ -n ${internal_available_drives} ]]
+        then
+
+            selected=${internal_available_drives[1]}
+            setActive devpath $selected
+            available_drives=("${(@)available_drives:#$selected}")
+            msg="Assigned drive $drive a device path value of
+                ${internal_available_drives[1]} from list of internal
+                drives available on this system (due to --noquery
+                option being set on the command line)."
+            appendActiveInferred $msg
+            report "$msg If this is not the drive you wanted, either
+                use the --drives command line option or manually
+                enter fixed --devpath values in the storage
+                definition file entry for this drive."
+
+        # devpath missing, noquery isn't set to query, so ask user
+        # fail first if there are no more actual drives to query
+        elif [[ -n ${available_drives} ]]
+        then
+
+            # query user for drive selection
+            if [[ -n ${available_drives} ]]
+            then
+
+                typeset eraser
+                eraser="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
+
+                msg="Drive $drive device selection"
+                ephemera "\\\n$msg\\\n${msg//?/-}"
+                ephemera "Select from list of available (unmounted, unselected)
+                          drives:\\\n" 1>&2
+                
+                typeset -i ad=0
+                for adrive in $available_drives
+                do
+                    print -n "$((++ad)) $adrive (" 1>&2
+                    [[ -n ${env_staging[$adrive,rm]:-} ]] \
+                        && print -n "external" 1>&2 || print -n "internal" 1>&2
+                    print -n " ${env_staging[$adrive,size]:-} " 1>&2
+                    print "${env_staging[$adrive,model]:-})" 1>&2
+                done
+                print "\nq: Quit\n" 1>&2
+
+                typeset confirm=""
+
+                while [[ -z ${(M)${confirm:-n}:#y} ]]; do
+                    print -n "${${msg:-}//?/\b}$eraser" 1>&2
+                    msg="Enter selection number (1"
+                    [[ $ad -gt 1 ]] && msg+="-$ad"; msg+="/q) "
+                    print -n "$msg" 1>&2
+                    typeset r="0"
+                    # accept digits 1-$i if $ad<10 (eg 1-3), otherwise digits 0-9
+                    while [[ -z ${(M)${r}:#[q$((ad>9?0:1))-$((ad>9?9:$ad))]#} ]]; do
+                        read -ks r
+                    done
+                    [[ ${(L)r} == q ]] && {
+                        print "${${msg:-}//?/\b}${eraser}User selected quit.\n" 1>&2; exit;}
+                    print -n "${${msg:-}//?/\b}$eraser${msg::=${available_drives[$r]} - correct? (y/n) }" 1>&2
+                    read -qs confirm && print 1>&2 || print -n "\b" 1>&2
+                done
+
+                selected=${available_drives[$r]}
+                report "Manually selected drive $drive path: $selected"
+                setActive devpath $selected
+                available_drives=("${(@)available_drives:#$selected}")
+
+            fi
+
+        else
+
+            fail "Drive $drive does not have a --devpath assigned and
+                there are no more available, unmounted drives on this
+                system. You may either manually assign a drive the storage
+                definition file, set one or more drives to use with the
+                --drives command line option, or make new drives available
+                by unmounting a drive in the current system."
+
+        fi
+        
+    done
+
+}
+__identifyNoclobberPartitions () {
+    # each noclobber partition either has an explicit devpath, an explicit partnum
+    # or some information that should allow us to deduce which partition it is.
+    # if the devpath and partnum are missing and if the deduction fails, then we
+    # can ask the user to identify the noclobber partitions). If there aren't enough
+    # existing partitions left to select from at any point, we fail.
+
+    . <(localopts blockenv_array: input_array: ignore_env: debug_opt: noquery_env:)
+
+    if ${(P)ignore_env:-false}
+    then
+        alert "\nIGNORING ENVIRONMENT, SKIPPING MATCHES\n:
+        Skipping matching of existing partitions on system to
+        --noclobber partitions listed in the storage definition file due to
+        the --ignore command line option (ignoring the actual system environment)."
+        return 0
+    fi
+
+    # convenience associative arrays
+    : ${(AA)all_types::=${(Pkv)${:-${blockenv_array}[(I)*type]}}}
+    : ${(A)all_parts::=${(k)all_types[(R)part]%,type}}
+
+    # helper functions
+    matchTypeValue () {
+        . <(localopts array_value_name: active_value: result: nummatches:)
+        typeset -A filtered; typeset -a matched
+        : ${(AA)filtered::=${(PkvL)${:-${blockenv_array}[(I)(${(~j:|:)all_parts}),$array_value_name]}}}
+        matched=(${(kL)filtered[(R)${(L)active_value}]%,$array_value_name})
+        (( ${(P)nummatches::=${#matched}} == 1 )) && eval $result'="$matched"'
+    }
+    isExistingPartition () {
+        typeset matched; [[ -n ${(L)all_parts[(R)${(L)1:-}]:-} ]]
+    }
+    queryUsePartitionMatchedWith () {
+        report "\nPartition ${record##*,} under drive $drivepath has --noclobber
+        set${ACTIVE[noclobber]:+ through inheritance}. An existing partition with a
+        matching $2 value (${ACTIVE[$2]}) has been found:"
+        print -n "\nMATCH: $1 " 1>&2
+        typeset f v
+        print -n "/ "${(Pv)^${:-${blockenv_array}[(I)$1,(label|partlabel|size|code)]}} 1>&2
+        print
+        report "If you don't want to see this query and want to ensure the
+        noclobber partition uses this (or another) specific existing partition,
+        add a --partnum or --devpath entry to this item in your storage
+        template. For example, for this partition:
+        '--partnum ${(M)matchpart%%[0-9]#}' (--partnum will take the rest of the
+        path from its parent drive), or '--devpath ${matchpart}'"
+        print -n "\nUse this partition? (y/n)"
+        read -qs
+    }
+    reportFailedMatchFromField () {
+        typeset msg
+        msg="Can't match template noclobber partition to existing system
+        partition based on $1. "
+        (( $matches > 1 )) \
+        && msg+="There is more than one matching partition" \
+        || msg+="There are no matching partitions"
+        msg+=" with the $1 value '$2'. Trying other match methods if
+               available."
+        report $msg
+    }
+    setActiveDevpathToMatched () {
+        appendActiveInferred "Matching existing noclobber
+        partition based on $1"
+        setActive devpath $matchpart
+        setActive partnum ${(M)matchpart%%[0-9]#}
+    }
+
+    processPartitions () {
+
+        . <(localopts start_at:)
+
+        typeset record
+        for record in $(getChildren ${start_at:-})
+        do
+
+            makeActive $record
+
+            # grab drive path while we pass by on our way to the partitions
+            [[ ${ACTIVE[type]} == drive ]] && drivepath=${ACTIVE[devpath]}
+
+            # skip unless this is a noclobber partition
+            if [[ ${ACTIVE[type]} == partition ]] && activeIsSet noclobber
+            then
+
+                # use this to confirm match later in the code/label/size fallbacks
+                typeset matchfound=false
+
+                # use in tests
+                typeset matchpart matches
+
+                # first, though, do we have an existing devpath
+                if [[ -n ${ACTIVE[devpath]:-} ]]
+                then
+
+                    # if not valid, fail
+                    isExistingPartition ${ACTIVE[devpath]:-} || {
+                        fail "Warning: --devpath value of the --noclobber
+                            partition ($devpath) is not among the existing
+                            partitions on this system."
+                        }
+                    setActive partnum ${(M)ACTIVE[devpath]%%[0-9]#}
+
+                # if no existing devpath, do we have an existing partnum
+                elif [[ -n ${ACTIVE[partnum]:-} ]]
+                then
+
+                    # if not valid, fail
+                    isExistingPartition ${ACTIVE[devpath]:-} || {
+                        fail "Warning: --partnum value of the --noclobber
+                            partition ($devpath) is not among the existing
+                            partitions on this system."
+                        }
+                    setActive devpath $drivepath${ACTIVE[partnum]:-}
+
+                # neither devpath, nor partnum, can we infer from other values?
+                else
+
+                    # try code first
+                    if [[ -n ${ACTIVE[code]:-} ]]
+                    then
+                        typeset codetype
+                        (( ${#ACTIVE[code]} > 4 )) \
+                            && codetype=longcode || codetype=shortcode
+                        # if we get a single match
+                        matchTypeValue \
+                            --array_value_name $codetype \
+                            --active_value ${ACTIVE[code]} \
+                            --nummatches matches \
+                            --result matchpart
+                        print "status is $?"
+                        print "nummatches $matches"
+                        print "result $matchpart"
+                        if matchTypeValue \
+                            --array_value_name $codetype \
+                            --active_value ${ACTIVE[code]} \
+                            --nummatches matches \
+                            --result matchpart
+                        then
+                            if ${(P)noquery_env:-false} \
+                                || queryUsePartitionMatchedWith $matchpart code
+                            then
+                                setActiveDevpathToMatched \
+                                    "${codetype%code} form GUID type code
+                                     ${ACTIVE[code]}"
+                                continue
+                            fi
+                        else
+                            reportFailedMatchFromField \
+                                "${codetype%code} form GUID type code" \
+                                "${ACTIVE[code]}"
+                        fi
+                    fi
+
+                    # try matching label, partlabel, and size
+                    for field in partlabel label size
+                    do
+                        if [[ -n ${ACTIVE[${field#part}]:-} ]]
+                        then
+                            if matchTypeValue \
+                                --array_value_name $field \
+                                --active_value ${ACTIVE[${field#part}]} \
+                                --nummatches matches \
+                                --result matchpart
+                            then
+                                if ${(P)noquery_env:-false} \
+                                    || queryUsePartitionMatchedWith $matchpart $field
+                                then
+                                    setActiveDevpathToMatched \
+                                        "$field match ${ACTIVE[${field#part}]}"
+                                    continue 2
+                                else
+                                    continue
+                                fi
+                            else
+                                reportFailedMatchFromField \
+                                    "$field" "${ACTIVE[${field#part}]}"
+                            fi
+                        fi
+                    done
+
+                    # final check and fail (we shouldn't be here unless we
+                    # failed to match, so could just fail straight away but
+                    # this is here to check that we're not missing a good result
+                    # in the logic above
+                    makeActive $record
+                    if [[ -z ${ACTIVE[devpath]:-} || -z ${ACTIVE[partnum]:-} ]]
+                    then
+                        fail "Storage template partition entry ${record##*,}
+                        in drive ${record%%,*} set to --noclobber cannot be
+                        matched to any existing partition. Either set a valid
+                        --devpath or --partnum, or a unique matching --label,
+                        --size, or --code value."
+                    else
+                        fail "Both devpath and partnum are set on a noclobber
+                        partition, but we thought they weren't! Unexpected error
+                        in noclobber match code."
+                    fi
+
+                fi
+            fi
+
+            $0 --start_at $record
+        done
+
+    }
+
+    processPartitions
+
+}
+__identifyPartitions () {
+    . <(localopts blockenv_array: input_array:)
+
+    processPartitions () {
+
+        . <(localopts start_at: partnum:)
+
+        typeset -i p=$partnum
+
+        typeset record
+        for record in $(getChildren ${start_at:-})
+        do
+            makeActive $record
+
+            # need to check if there is an existing device path or partnum
+            # skipping noclobber partitions, since we've just deal with them
+            if [[ ${ACTIVE[type]} == partition ]] && ! activeIsSet noclobber
+            then
+                setActive devpath $drivepath$((++p))
+                setActive partnum $p
+            fi
+
+            $0 --start_at $record --partnum $p
+        done
+
+    }
+
+    typeset drive
+    for drive in $(getChildren)
+    do
+        makeActive $drive
+        drivepath=${ACTIVE[devpath]}
+        maxpart=${${(Onu)${(Pk)${:-${blockenv_array}[(I)$drivepath*]}}//(#b)(#s)$drivepath([0-9]#),*/$match}[1]:-}
+
+        # now scan all existing partitions and see if there is an existing partnum
+
+        # if noclobber drive, use current max partition number as starting point
+        typeset -i partnum
+        if activeIsSet noclobber
+        then
+            partnum=$maxpart
+            if (( $maxpart > 0 ))
+            then
+                [[ ${ACTIVE[noclobber]} == inherited ]] \
+                    && msg=" (inherited from a descendant element)" \
+                    || msg=""
+                alert "Drive #$drive ($drivepath) is set to noclobber$msg. New
+                partitions will be added starting AFTER partition number
+                $partnum. This may result in partition gaps if you have
+                other missing partitions with a value less than that. Check
+                partitions with sgdisk and/or lsblk. sgdisk's --sort option
+                can be used to address gaps. Read the sgdisk manpage first."
+            fi
+        else
+            partnum=0
+        fi
+        processPartitions --start_at ${drive} --partnum $partnum
+    done
+}
+__identifyOtherDevicePaths () {
+    # recursively add any other non-partition missing device paths
+    # check for collisions along the way (such as a drive with one
+    # device path such as /dev/sda and child partition with a path
+    # such as /dev/sdb1 ... this shouldn't usually happen since the
+    # whole point of this is really to avoid manually entering device
+    # paths other than, optionally, the drive path
+    #
+    # also check to see if we need to reorder the paritions. this
+    # is done via partnums
+    . <(localopts input_array: pindex:)
+    typeset -a children;
+    children=($(getChildren ${pindex:-}))
+    typeset -i partitionnum basepartnum
+    partitionnum=0
+    basepartnum=0
+
+    for record in $children; do
+
+        unset nominal_devpath nominal_partnum
+
+        # current record
+        makeActive $record
+        [[ -n ${STORAGE[(I)$record*noclobber]} ]] \
+            && noclobber=true  || noclobber=false
+
+        # drive ancestor of current record
+        drive=${record%%,*}
+        drivepath=${(P)${:-${input_array}[$drive,devpath]}}
+        [[ -n ${STORAGE[(I)$drive*noclobber]} ]] \
+            && drive_noclobber=true  || drive_noclobber=false
+
+        # largest partition value on drive:
+        # only check if --drives (DRIVES) hasn't been passed on command line
+        [[ -n ${DRIVES} ]] && maxpartnum=0 || {
+        maxpartnum=${${(O)${(M)=$(lsblk $drivepath\
+            -lpno NAME):#${drivepath}?##}##${drivepath}}[1]}
+        }
+
+        # if we are preserving some of the existing drive contents, then
+        # we need to offset new partition indexes from the current max base,
+        # otherwise we offset from zero
+        if $drive_noclobber; then
+            basepartnum=$maxpartnum
+        fi
+
+        # create filesystem child or encryption devpath
+        if [[ ${ACTIVE[type]} == filesystem ]] && \
+             [[ ${PARENT[type]} == encryption ]]; then
+            nominal_devpath=/dev/mapper/${PARENT[label]:-${PARENT[devpath]//\//_}}
+
+        # create logical devpath
+        elif [[ ${ACTIVE[type]} == logical ]]; then
+            print "type logical -> currently unimplemented"; exit 1
+
+        # handle all other cases
+        elif ! $noclobber
+        then
+            nominal_devpath=${PARENT[devpath]:-}
+
+        fi
+
+        # check if the calculated devpath is different from any existing path
+        if ! [[ ${ACTIVE[devpath]:=${nominal_devpath:-}} =~ \
+            ${nominal_devpath:-${ACTIVE[devpath]}} ]]; then
+            fail "devpath collision! the path listed in the storage
+            file (${ACTIVE[devpath]}) does not match the value computed based
+            on the parent device path: ${PARENT[devpath]}.  Remove
+            ${ACTIVE[type]} --devpath value or change selected drive."
+
+        # otherwise assign value to array record
+        else
+            eval $input_array'[$record,devpath]=${ACTIVE[devpath]}'
+            [[ -n ${nominal_partnum:-} ]] \
+                && eval $input_array'[$record,partnum]=${nominal_partnum:-}'
+        fi
+            
+        $0 --input_array $input_array --pindex $record \
+            ${earmarked:+--earmarked }${earmarked:-}
+
+    done
+}
+__printTree () {
+
+    . <(localopts \
+            input_array:    \
+            start_at:       \
+            leader:         \
+            input_filename: \
+            input_filepath: \
+            tree_option:    )
+
+    ${(P)tree_option:-} || return 0
+
+    typeset indentpercent=2 softtab=4
+    typeset indent=$(( indentpercent*$COLUMNS/100 ))
+    typeset i=${(l.$indent...):-}
+    typeset ii="$i$i"
+
+    typeset columns=$(($COLUMNS+5)) # wrap columns
+    typeset width=$indent # tree line width
+    typeset gap=0   # gap for readability
+
+    typeset w=${(l.$width..─.):-}
+    typeset b=${(l.$width...):-}
+    typeset x=${(l.$gap...):-}
+    typeset t="├─$w"
+    typeset l="└─$w"
+    typeset m="│ $b"
+    typeset s="  $b"
+    typeset c
+
+    typeset -A colorcodes
+    colorcodes=(
+    drive       green
+    partition   yellow
+    filesystem  blue
+    subvolume   blue
+    encryption  magenta
+    swap        cyan
+    logical     orange
+    )
+
+    # print intro
+    print
+    print "${i}${COLOR[white]:-}Source filename: ${(P)input_filename}"
+    print "${i}Source filepath: ${(P)input_filepath}"
+    print
+    print "${i}${COLOR[default]:-}Items in [BRACKETS] have been automatically inferred."
+    print "${i}Items in RED are set to noclobber.\n"
+
+    buildTree () {
+
+        . <(localopts start_at: leader:)
+
+        typeset -a children;
+        children=($(getChildren ${start_at:-}))
+
+        for record in $children; do
+
+            makeActive $record
+
+            # if this isn't last child, use a T, otherwise an L
+            # and similarly add/don't add a continuation line
+            if [[ $record != ${children[-1]} ]];
+            then
+                line1="$ii${leader:+$x}${leader:-}${leader:+$t}"
+                add=$m$x
+            else
+                line1="$ii${leader:+$x}${leader:-}${leader:+$l}"
+                add=$s$x
+            fi
+            if (( ${+ACTIVE[auto]} )); then
+                ACTIVE[type]="[${ACTIVE[type]}]"
+            fi
+            if (( ${+ACTIVE[noclobber]} )); then
+                line2="${x}${COLOR[red]:-}${ACTIVE[type]}${COLOR[default]:-} "
+            else
+                line2="${x}${ACTIVE[type]} "
+            fi
+
+            # print continuation line if not initial line
+            [[ $record != 1 ]] && print "$ii$x${leader:-}$m"
+
+            typeset -a e_linebuilder e_colorcoder
+            e_linebuilder=(
+            '${line1}'
+            '${line2}'
+            '${'
+                '${(k)ACTIVE}' '# all active keys for item'
+                '//'
+                    '(#b)'
+                    '(*)' '# use entirekey value in replacement'
+                '/'
+                    '$match' '# print the key value'
+                    '${ACTIVE['
+                        '${match}' '# an equals sign for visual unity'
+                    ']:+=}'        '# but only if it is a non boolean'
+                    '${ACTIVE[${match}]:+' '# only output value if not empty'
+                    '${(q-)ACTIVE[${match}]:-}}' '# so booleans output clean'
+            '}'
+            )
+            e_colorcoder=(
+            '${line_head'
+            '//(#b)(#s)'
+            '([^[:alnum:]\[]#)'
+            '(\[#${typecode}\]#)'
+            '/${match[1]}'
+            '${COLOR[${colorcodes[$typecode]}]:-}'
+            '${match[2]}${COLOR[default]:-}'
+            '}'
+            )
+
+            # remove keys we don't want
+            typeset auto=${${ACTIVE[auto]+true}:-false}
+            typeset type=${ACTIVE[type]}
+            unset "ACTIVE[index]"   \
+                  "ACTIVE[auto]"    \
+                  "ACTIVE[type]"    \
+                  "ACTIVE[inferred]"\
+                  "ACTIVE[warn]"
+
+
+            # add all keys
+            line=${(ej..)e_linebuilder:#\#*}
+
+            # wrap lines with leaders
+            typeset line_head="" line_tail=""
+            typeset -a treeoutput; treeoutput=()
+            firstline=true
+            while [[ -n ${line} ]]
+            do
+                # check if there are children and modify continuation lines
+                [[ -n ${STORAGE[$record,1,type]:-} ]] && c=$m || c=$s
+
+                # add appropriate leader to nested line, only if not first loop
+                [[ -n $line_head ]] && {
+                line="${ii}$x${leader:-}${add}$c${(l.$((${#type}-$width-1))...):-}$line"
+                }
+
+
+                # wrap off the current item value, then take the first line
+                getWrapped --width $columns --head line_head $line
+
+                # trim the remainder
+                line=${line[$((${#line_head}+1)),-1]## #}
+
+                # add highlight colors if first line
+                $firstline && {
+                for typecode in ${(k)colorcodes}
+                do
+                    line_head=${(ej..)e_colorcoder:#\#*}
+                done
+                firstline=false
+                }
+
+                # print output
+                print "$line_head"
+
+            done
+
+            # recursively handle children, modifying the leader
+            $0 --start_at $record --leader "${leader:-}${add}"
+        done
+    }
+
+    buildTree
+
+    # extra line only at very end of output
+    [[ -z ${start_at:-} ]] && print \\n
+}
+__genPayload () {
+
+    . <(localopts input_array: outputvar: sourcefile: infilename: mountroot: multipass: comments_option: warning_option:)
+
+    # prepare arrays
+    typeset -ag $outputvar
+    typeset width=60
+    typeset __="# ${(r:$(($width-2))::--:):-}"
+
+    # output script header
+    eval $outputvar'+=(
+    "#!/usr/bin/env zsh\n"
+    "$__\n# Storage initialization commmands\n$__"
+    "# turn off comments in this output with the following option"
+    "# \"$SCRIPTNAME --${(L)comments_option}\"\n$__\n#"
+    "# SOURCE FILE - ${(P)infilename}"
+    "# read from: ${(P)sourcefile}\n$__"
+    ${:-\# }${(f)^"$(< ${(P)sourcefile})"}
+    )'
+
+    # script reports/warnings, etc.
+    ${(P)comments_option:-false} || {
+        eval $outputvar'+=( "#\n$__" ${(f)^"$(reportLog)"})'
+    }
+
+    ${(P)warning_option:-false} || {
+    typeset warn
+    warn="WARNING - hide this with "
+    warn+="\"$SCRIPTNAME --${(L)warning_option}\""
+    ${(P)comments_option:-false} && {
+    eval $outputvar'+=(":\n: $warn")' }
+    eval $outputvar'+=(
+    "\n\n$__\n# $warn\n$__"
+    "cat 1>&2 << \\\\\\"
+    "--WARNING--"
+    "WARNING:\nReview this script prior to running it."
+    "Unrecoverable changes may be made to this system.\n"
+    "Do you wish to continue? (y/n)\n"
+    "--WARNING--"
+    "read -qs || exit; print"
+    )'
+    ${(P)comments_option:-false} && { eval $outputvar'+=(":")' }
+    }
+
+    typeset -A section_header
+    section_header=(
+    partitions  "# Drive formatting and partition structures"
+    encryption  "# Encryption"
+    filesystem  "# Filesystem creation"
+    swap        "# Swap configuration"
+    logical     "# Logical volume preparation"
+    mount       "# Mount filesystems & create subvolumes"
+    )
+
+    sectionHeader () {
+        if [[ -n ${section_header[$1]:-} ]]
+        then
+            eval $outputvar'+=("\n\n$section_header[$1]\n$__")'
+            unset "section_header[$1]"
+        fi
+    }
+
+    genPartitions
+    genEncryption --multipass $multipass
+    genSwap
+    genFilesystem
+    genMounts
+
+}
+__payloadPrint () {
+    . <(localopts input_array: comments_option:)
+    payload="$(print -l -- ${(P)input_array})"
+    print 1>&2
+    ${(P)comments_option:-false} && { 
+        print -l -- ${${(@f)payload}//(#s)\# */}
+    } || print -l -- "${(@)payload}"
+}
+__usage () {
+
+    . <(localopts readme minimal)
+
+    typeset marginpercent=2 softtab=4
+    typeset margin=$(( marginpercent*$COLUMNS/100 ))
+    typeset wrap=$COLUMNS
+    typeset __="${(r:$COLUMNS::--:):-}"
+
+    usageHighlight () {
+        typeset -g _LL # fake closure
+        . <(localopts indent:)
+        typeset s=${COLOR[default,bold]:-} b=${COLOR[blue]:-} d=${COLOR[default]:-}
+        # check initial, non indent leading character of last line
+        typeset c="${${_LL:-}[$((i+2))]##[[:blank:]]#}"
+        (( ${(M)#${(Q)${@}}## #} > (i+2) )) && [[ -z $c ]] && {
+        print -- "$b${@}$d"; return }
+        # if last line wasn't empty, then this isn't eligible for highlight
+        [[ -n $c ]] && { print -- "${_LL::=${@}}"; return }
+        e=(
+        '${${@'                 '# expand all values passed to this function'
+        '//(#b)'                '# FIRST search/replace with backreferences on'
+        '(#s)'                  '# from start of string'
+        '('                     '# for a pattern...'
+            '${(l.${indent:-0}...):-}'  '# starting with a number of spaces
+                                           equal to the indent integer value'
+            '[^:[:space:]]##:'          '# followed by one or more non space
+                                           characters and then a colon'
+        ')'
+        '(*)(#e)'               '# then match the remainder of the line to
+                                   match[2] (to end of the string)'
+        '/'                     '# replace with...'
+        '$s'                    '# default color, bold'
+        '$match[1]'             '# the part of the line up to the colon'
+        '$d'                    '# default color, no bold'
+        '$match[2]'             '# the rest of the line'
+        '}'                     '# end of FIRST search/replace'
+        '//(#b)'                '# SECOND search/replace with backreferences on'
+        '(#s)'                  '# from start of string'
+        '([^:]##:[[:blank:]]#)' '# $match one or more non colons, then a colon and maybe a blank'
+        '(#e)'                  '# ... to the end of the line'
+        '/$s$match$d}'          '# replace with the match, made bold, then back to non bold'
+        )
+        print -- ${_LL::=${(ej::)e:#\#*}}
+    }
+
+    # different highlighting for readme format, along with fixed margin and wrap values
+    ${readme:-false} && {
+    margin=0; wrap=80
+    usageHighlight () {
+        . <(localopts indent: minimal)
+        typeset i=${indent:-0}
+        typeset line="$@"
+        (( ${(M)#${(Q)line}## #} > (i+2) )) && {
+        print -- "${line}"; return }
+        typeset c="${${_LL:-}[$((i+2))]##[[:blank:]]#}"
+        [[ -n $c ]] && { print -- "${_LL::=${@}}"; return }
+        e=(
+        '${'
+        '${'
+        'line'
+        '//(#b)(#s)([^#:[:space:]]##:) #([^[:blank:]]##*)(#e)/**${match[1]}**${${match[2]## #}:+ }${match[2]## #}}'
+        '//(#b)(#s)([^#:]##:[[:blank:]]#)(#e)/### $match}'
+        )
+        print -- ${_LL::=${(ej::)e:#\#*}}
+    }}
+
+    # section heading
+    sectionHeading () {
+        typeset heading
+        ${readme:-false} && {
+        print "\n## ${(C)${(L)@}}\n"
+        } || {
+            smartWrap --indent $margin ${(U)@} --output heading
+            print -- "\n${COLOR[magenta]:-}${__}${COLOR[default]:-}"
+            print -- "${COLOR[magenta]:-}$heading${COLOR[default]:-}"
+            print -- "${COLOR[magenta]:-}${__}${COLOR[default]:-}\n"
+        }
+    }
+
+    # section subheading
+    subHeading () {
+        typeset subheading
+        ${readme:-false} && {
+        print "\n### ${(C)${(L)@}}\n"
+        } || {
+            smartWrap --indent $margin ${(U)@} --output subheading
+            print \\n
+            print -l -- ${COLOR[magenta]:-}${^subheading}${COLOR[default]:-}
+            print -- ${COLOR[magenta]:-}${(l.$margin...):-}${${(O)${${subheading## #}%% #}//?/-}[1][margin,-1]}${COLOR[default]:-}\\n
+        }
+    }
+
+    # minimal usage
+    () {
+        ${minimal:-false} || return 0
+        print "\\n  usage: $SCRIPTNAME [templatename]" 1>&2
+        print 1>&2
+        typeset -A allopts
+        minimal_opts=(
+        ${(kv)OPTS_BOOL}
+        ${(kv)OPTS_ARGS}
+        )
+
+        opt_indent=$(( ${#${(kO@)minimal_opts//?/#}[1]}+7))
+        typeset l=${(r.$margin...):-} print=:
+
+        for optset in OPTS_BOOL OPTS_ARGS
+        do
+            for opt in ${(okP)optset}
+            do
+                optflags="-${(L)opt:0:1}, --${(L)opt}"
+                optval=("${(@)${(fP)${:-${optset}[$opt]}}## #}")
+                if [[ $optset =~ ARGS ]]
+                then
+                    optargs="${optval[1]}"
+                    optdesc="${optval[2]}"
+                else
+                    optargs=""
+                    optdesc="${optval[1]}"
+                fi
+                print -- "  $optflags $optargs\n      ${optdesc}" 1>&2
+            done
+        done
+        print "\n  '$SCRIPTNAME --usage | less' or" 1>&2
+        print "  '$SCRIPTNAME --coloroff --usage | less'" 1>&2
+        print "   for more details and advanced options\n" 1>&2
+        exit 0
+    }
+
+    # general usage (from header at top of script)
+    () {
+        ${README:-false} && print "# $SCRIPTNAME\n\n" || \
+            sectionHeading "$SCRIPTNAME - General Usage"
+        smartWrap $SUMMARY \
+            --output WRAPPED --indent $margin --wrap $wrap --padding $margin
+        for line in ""${^WRAPPED}
+        do
+            usageHighlight --indent $margin "$line"
+        done
+        print
+    }
+
+    # optargs usage (automatically generated from OPTS_* arrays)
+    () {
+        sectionHeading "Command Line Options"
+        typeset -A allopts
+        allopts=(
+        ${(kv)OPTS_BOOL}
+        ${(kv)OPTS_BOOL_ALT}
+        ${(kv)OPTS_ARGS}
+        ${(kv)OPTS_ARGS_ALT}
+        )
+
+        opt_indent=$(( ${#${(kO@)allopts//?/#}[1]}+7))
+        typeset l=${(r.$margin...):-} print=:
+
+        for optset in OPTS_BOOL OPTS_BOOL_ALT OPTS_ARGS OPTS_ARGS_ALT
+        do
+            for opt in ${(okP)optset}
+            do
+                if [[ $optset =~ ALT ]]
+                then
+                    optflags="-${(U)opt:0:1}, --${(L)opt}"
+                else
+                    optflags="-${(L)opt:0:1}, --${(L)opt}"
+                fi
+                optval=("${(@)${(fP)${:-${optset}[$opt]}}## #}")
+                if [[ $optset =~ ARGS ]]
+                then
+                    optargs="${optval[1]}"
+                    optdesc="${optval[2,-1]}"
+                else
+                    optargs=""
+                    optdesc="${optval}"
+                fi
+                #smartWrap $optline  --output optline --indent $margin \
+                #    --wrap $wrap --padding $margin
+                if ${README:-false}; then
+                    smartWrap \
+                        --margin $margin \
+                        --wrap $wrap \
+                        "\`$optflags $optargs\`\\\n"
+                    smartWrap "${optdesc}" \
+                        --wrap $wrap
+                else
+                    smartWrap \
+                        --margin $margin \
+                        --wrap $wrap \
+                        "${fg_bold[default]:-}$optflags${COLOR[default]:-}"\
+                        "$optargs\\\n"
+                    smartWrap "${optdesc}" \
+                        --indent $((m+softtab)) --wrap $wrap --padding $margin
+                fi
+                print
+
+            done
+        done
+    }
+
+    # storage file definition
+    () {
+        sectionHeading "Storage File Definition Overview"
+
+        subHeading "Storage Definition File - Valid Item Options (Fields)"
+        shrinkWrap --margin $margin "These are the options (fields) that are
+            acceptable for each of the storage types. The types listed are
+            the only valid types (drive, partition, etc.)."
+        for t in ${=VALUES[type]}; do
+            smartWrap --margin $margin \
+                "\\n* \`${t}:\` ${VALID[$t]:-Not yet implemented}"
+        done
+
+        subHeading "Storage Definition File - Field Descriptions"
+        for optset in ITEMOPTIONS_BOOL ITEMOPTIONS_SCAL
+        do
+            for opt in ${(okP)optset}
+            do
+                optflags="--${(L)opt}"
+                optval=("${(@)${(fP)${:-${optset}[$opt]}}## #}")
+                if [[ $optset =~ SCAL ]]
+                then
+                    optargs="${optval[1]}"
+                    optdesc="${optval[2,-1]}"
+                else
+                    optargs=""
+                    optdesc="${optval}"
+                fi
+                #smartWrap $optline  --output optline --indent $margin \
+                #    --wrap $wrap --padding $margin
+                if ${README:-false}; then
+                    smartWrap \
+                        --margin $margin \
+                        --wrap $wrap \
+                        "\`$optflags $optargs\`\\\n"
+                    smartWrap "${optdesc}" \
+                        --wrap $wrap
+                else
+                    smartWrap \
+                        --margin $margin \
+                        --wrap $wrap \
+                        "${fg_bold[default]:-}$optflags${COLOR[default]:-}"\
+                        "$optargs\\\n"
+                    smartWrap "${optdesc}" \
+                        --indent $((m+softtab)) --wrap $wrap --padding $margin
+                fi
+                print
+            done
+        done
+    }
+
+}
+
+:<< \
+------------------------------------------------------------------------------
+__inferMissingElements subsidiary functions
+
+each of these assumes the scope of __inferMissingElements  and must be called
+from within it (i.e. there is no explicit parameter option passing on these)
+------------------------------------------------------------------------------
+inferFilesystemValues () {
+    if [[ ${ACTIVE[type]:-} == filesystem ]]
+    then
+
+        typeset field amatch
+
+        # missing mountpoint, fstype, from parent or ancestor
+        for field in mountpoint fstype
+        do
+            if [[ -z ${ACTIVE[$field]:-} ]]
+            then
+                if [[ -n ${PARENT[$field]:-} ]] && false
+                then
+                    setActive $field ${PARENT[$field]}
+                    appendActiveInferred "moved $field field from ${PARENT[type]} parent"
+                    unset "${input_array}[$PARENT[index],$field]"
+                    return 1
+                elif [[ -n ${amatch::=$(ancestorGetMatch $field)} ]]
+                then
+                    setActive $field ${(P)${:-${input_array}[$amatch]}}
+                    atype=${(P)${:-${input_array}[${amatch%$field}type]}}
+                    appendActiveInferred "moved $field field from $atype ancestor"
+                    unset "${input_array}[$amatch]"
+                    return 1
+                fi
+            fi
+        done
+
+        # missing fstype, infer from child
+        if [[ -z ${ACTIVE[fstype]:-} \
+           && ${(P)${:-${input_array}[${ACTIVE[index]},1,type]}:-} \
+           == subvolume ]]
+        then
+            eval $input_array'[$ACTIVE[index],fstype]=btrfs'
+            setActive fstype btrfs
+            appendActiveInferred "set fstype to btrfs due to subvolume child"
+            return 1
+        fi
+
+        # missing fstype, set default value
+        if [[ -z ${ACTIVE[fstype]:-} ]]
+        then
+            setActive fstype ext4
+            appendActiveInferred "set fstype to ext4 as default value for missing fstype field"
+            return 1
+        fi
+    fi
+    
+}
+inferSwapValues () {
+    if [[ ${ACTIVE[type]:-} == swap ]] && ${${ACTIVE[noclobber]+false}-true}
+    then
+        # missing size
+        if [[ -z ${ACTIVE[size]:-} ]]
+        then
+            if [[ -z $(getPartitionAncestor size) ]]
+            then
+                # this will just be used by paritition later
+                setActive size ram || :
+                appendActiveInferred "set missing swap size to match system ram"
+                return 1
+            fi
+        fi
+    fi
+}
+inferPartitionValues () {
+    if [[ ${ACTIVE[type]:-} == partition ]]
+    then
+        # missing size and is NOT noclobber
+        if [[ -z ${ACTIVE[size]:-} ]] && ${${ACTIVE[noclobber]+false}-true}
+        then
+
+            typeset dsizekey dsize dtype
+            typeset -a sibs
+
+            # check for swap descendant for use below
+            typeset -A types
+            : ${(AA)sizes::=${(Pkv)${:-${input_array}[(I)${ACTIVE[index]},[0-9]##,type]}}}
+            typeset swap_descendant=${(k)sizes[(r)swap]%,type}
+
+            # try to get first available size from any descendant
+            dsizekey=${(Pk)${:-${input_array}[(i)${ACTIVE[index]},*,size]}:-}
+            dsize=${(Pv)${:-${input_array}[$dsizekey]}:-}
+            dtype=${(Pv)${:-${input_array}[${dsizekey%%size}type]}:-}
+            if [[ -n ${dsize:-} ]]
+            then
+                setActive size $dsize
+                unsetActive warn
+                appendActiveInferred "claimed size from ${dtype:-} descendant"
+                unset "${input_array}[$dsizekey]"
+                return 1
+
+            # if there is a swap descendant, it lacks a size
+            # so we infer system ram size
+            elif [[ -n ${swap_descendant} ]]
+            then
+                setActive size ram
+                unsetActive warn
+                appendActiveInferred "set missing size to match system ram due to swap descendant"
+                return 1
+
+            # else count other siblings, if we're alone then max
+            # (swap check must be before this)
+            elif [[ -z ${(A)sibs::=$(getOtherSiblings)} ]]
+            then
+
+                setActive size max
+                unsetActive warn
+                appendActiveInferred "set paritition size to be maximum
+                    available free space as it is the only partition listed"
+                return 1
+
+            # check for conditition of all existing peers
+            else
+
+                typeset sib all_sibs_pass=true
+
+                # a noclobber sibling is assumed to have a size
+                # (we don't need to know it since we won't be
+                # creating the partition), so we check here for
+                # either noclobber or size. if all other partitions
+                # have at least one of these values then we can
+                # safely assume this single partition that is
+                # missing a value is a max size partition
+                for sib in $sibs
+                do
+                    # TODO: if I change noclobber checks to
+                    # be a function rather than preset parameter
+                    # lookup, then this will also change
+                    if ( ! isSet "${input_array}[$sib,noclobber]" ) || 
+                       ( ! isSet "${input_array}[$sib,size]" )
+                    then
+                    else
+                        # sibling item without noclobber or size found
+                        all_sibs_pass=false
+                        break
+                    fi
+                done
+
+                if $all_sibs_pass
+                then
+                    setActive size max
+                    unsetActive warn
+                    appendActiveInferred "set partition size to use maximum
+                        available space on drive as all other partitions are
+                        either either fixed size or are noclobber"
+                    return 1
+                fi
+
+                # any other future all-sibling checks go here
+
+                # we drop out of this loop here with an implicit
+                # return 0 as we've now done our best to infer
+                # partition values
+                warn "Unable to infer a size value for partition $record"
+
+            fi
+
+        fi
+    fi
+}
+inferDrive () {
+
+    # insert and indent all items, add drive (if no initial drive present)
+    if [[ ${(P)${:-${input_array}[1,type]}} == drive ]]
+    then
+        return 0
+    fi
+
+    . <(localopts input_array:)
+
+    input_array=${input_array:-STORAGE} # be good, though, and use option
+
+    typeset -A STAGING; STAGING=()
+
+    typeset index
+    for index in ${(Pk)input_array}
+    do
+        STAGING[1,$index]=${(P)${:-${input_array}[$index]}}
+    done
+    STAGING[1,type]=drive
+    STAGING[1,inferred]="added implied drive"
+    STAGING[1,auto]=""
+    eval $input_array'=("${(@kv)STAGING}")'
+
+}
+inferNoclobber () {
+    set -- noclobber
+    activeIsSet $1 && return 0
+    if descendantIsSet $1
+    then
+        setActive $1 inherited
+        appendActiveInferred "set $1 due to $1 descendant"
+        return 1
+    elif ancestorIsSet $1
+    then
+        typeset -a amatch
+        amatch=($(ancestorGetMatch noclobber))
+        if [[ ${(P)${:-${input_array}[${amatch[1]}]}} != inherited ]]
+        then
+            setActive $1 inherited
+            appendActiveInferred "set $1 due to $1 ancestor"
+            return 1
+        fi
+    fi
+}
+inferSsd () {
+    set -- ssd
+    activeIsSet $1 && return 0
+    if descendantIsSet $1
+    then
+        setActive $1 inherited
+        appendActiveInferred "set $1 due to $1 descendant"
+        return 1
+    elif ancestorIsSet $1
+    then
+        setActive $1 inherited
+        appendActiveInferred "set $1 due to $1 ancestor"
+        return 1
+    fi
+}
+inferClaimFromDescendant () {
+    for inferfield in ${(P)=${:-${inherit_array}[up]}}
+    do
+        [[ -n ${PARENT[type]:-} ]]  || continue
+        isSet "PARENT[$inferfield]" && continue
+        ! activeIsSet $inferfield   && continue
+        typeset -a validfields
+        valid_parent=(
+            ${(P)=${:-${valid_array}[common]}}
+            ${(P)=${:-${valid_array}[${PARENT[type]}]}}
+            )
+        valid_active=(
+            ${(P)=${:-${valid_array}[common]}}
+            ${(P)=${:-${valid_array}[${ACTIVE[type]}]}}
+            )
+        valueInList valid_parent $inferfield && {
+            setParent $inferfield ${ACTIVE[$inferfield]:-}
+            appendActiveInferred \
+                "Set $inferfield on ${PARENT[type]} from child ${ACTIVE[type]} $inferfield value."
+            # MOVE from source record if not valid there
+            valueInList valid_active $inferfield || {
+                unsetActive $inferfield
+            }
+            return 1
+            }
+    done
+}
+inferInheritUp () {
+    for inferfield in ${(P)=${:-${inherit_array}[up]}}
+    do
+        [[ -n ${PARENT[type]:-} ]]  || continue
+        isSet "PARENT[$inferfield]" && continue
+        ! activeIsSet $inferfield   && continue
+        typeset -a validfields
+        valid_parent=(
+            ${(P)=${:-${valid_array}[common]}}
+            ${(P)=${:-${valid_array}[${PARENT[type]}]}}
+            )
+        valid_active=(
+            ${(P)=${:-${valid_array}[common]}}
+            ${(P)=${:-${valid_array}[${ACTIVE[type]}]}}
+            )
+        valueInList valid_parent $inferfield && {
+            setParent $inferfield ${ACTIVE[$inferfield]:-}
+            appendActiveInferred \
+                "Set $inferfield on ${PARENT[type]} from child ${ACTIVE[type]} $inferfield value."
+            # MOVE from source record if not valid there
+            valueInList valid_active $inferfield || {
+                unsetActive $inferfield
+            }
+            return 1
+            }
+    done
+}
+inferInheritDown () {
+    for inferfield in ${(P)=${:-${inherit_array}[down]}}
+    do
+        [[ -n ${PARENT[type]:-} ]]  || continue
+        isSet "ACTIVE[$inferfield]" && continue
+        ! parentIsSet $inferfield   && continue
+        typeset -a validfields
+        valid_parent=(
+            ${(P)=${:-${valid_array}[common]}}
+            ${(P)=${:-${valid_array}[${PARENT[type]}]}}
+            )
+        valid_active=(
+            ${(P)=${:-${valid_array}[common]}}
+            ${(P)=${:-${valid_array}[${ACTIVE[type]}]}}
+            )
+        valueInList valid_active $inferfield && {
+            setActive $inferfield ${PARENT[$inferfield]:-}
+            appendActiveInferred \
+                "Set $inferfield on ${ACTIVE[type]} from parent ${PARENT[type]} $inferfield value."
+            # MOVE from source record if not valid there
+            valueInList valid_parent $inferfield || {
+                unsetParent $inferfield
+            }
+            return 1
+            }
+    done
+}
+inferParentPartition () {
+
+    if [[ ${PARENT[type]:-} != drive ]]
+    then
+
+        return 0
+
+    elif [[ $ACTIVE[type] == filesystem ]]
+    then
+
+        # if filesystem has other filesystem siblings (or any siblings at all!)
+        # then we need a partition  OR regardless of whether the filesystem is
+        # the only filesystem/sibling, if it (OR any of its desendants) has a
+        # size other than max, then also create partition parent
+        # OR (TODO)
+        # if filesystem is single but not of type that can format an entire
+        # drive (or rather which would be useless if they did) then partition
+
+        # try to get first available size from any descendant
+        typeset dsizekey dsize dtype
+        dsizekey=${(Pk)${:-${input_array}[(i)${ACTIVE[index]},*,size]}:-}
+        dsize=${(Pv)${:-${input_array}[$dsizekey]}:-}
+        dtype=${(Pv)${:-${input_array}[${dsizekey%%size}type]}:-}
+
+        if [[ -n $(getOtherSiblings) ]] \
+        || [[ -n ${ACTIVE[size]:-} && ${(L)ACTIVE[size]} != max ]] \
+        || [[ -n ${dsize:-} && ${(L)dsize:-} != max ]]
+        then
+
+            insertParent --type partition
+            appendActiveInferred "added implied parent partition of filesystem"
+            return 1
+        else
+            return 0
+        fi
+
+    elif [[ $ACTIVE[type] == encryption ]]
+    then
+
+        insertParent --type partition
+        appendActiveInferred "added implied parent partition of encryption"
+        return 1
+
+    elif [[ $ACTIVE[type] == swap ]]
+    then
+
+        insertParent --type partition
+        appendActiveInferred "added implied parent partition of swap"
+        return 1
+
+    fi
+}
+inferParentEncryption () {
+    if [[ ${PARENT[type]:-} != encryption ]]
+    then
+
+        if activeIsSet encrypt
+        then
+
+            unsetActive encrypt
+            insertParent --type encryption
+            appendActiveInferred \
+                "added parent encryption of ${ACTIVE[type]} due to --encrypt"
+            [[ -n ${ACTIVE[label]:-} ]] && \
+                setActive label "crypt_${ACTIVE[label]//[^[:WORD:]]##/_}"
+            return 1
+
+        fi
+
+    fi
+}
+inferParentFilesystem () {
+    if [[ ${PARENT[type]:-} != filesystem ]]
+    then
+
+        if [[ $ACTIVE[type] == subvolume ]]
+        then
+
+            insertParent --type filesystem
+            appendActiveInferred \
+                "added implied parent filesystem of btrfs subvolume"
+            return 1
+
+        fi
+
+    fi
+}
+inferChildFilesystem () {
+    if [[    ${ACTIVE[type]:-} =~ (drive|encryption|partition) \
+       && -n ${ACTIVE[fstype]:-} && -z $(getChildren ${ACTIVE[index]}) ]]
+    then
+        eval $input_array'[${ACTIVE[index]},1,type]=filesystem'
+        setActive inferred \
+            "added implied child filesystem of ${ACTIVE[type]} due to fstype value being set"
+        setActive auto
+        return 1
+    fi
+}
+# ----------------------------------------------------------------------------
+appendActiveInferred () {
+    . <(localopts index: array:)
+    array=${array:-STORAGE}
+    index=${index:-${ACTIVE[index]:-}}
+    field=inferred
+    typeset current=${(P)${:-${array}[$index,inferred]}:-}
+    typeset new="${current:-}${current:+; }${${=*}}"
+    reportInferred "$*"
+    eval $array'[$index,inferred]=$new'
+}
+insertParent () {
+    . <(localopts array: index: type:)
+    array=${array:-STORAGE} # be good, though, and use option
+    index=${index:-${ACTIVE[index]:-}}
+    [[ -z ${type:-} ]] && fail "type missing in call to $0"
+    insertGapIndentSingleBranch \
+        --array $array --insertion_point $index 
+    eval $array'[$index,type]=$type'
+    eval $array'[$index,auto]=""'
+}
+insertSibling () {
+    . <(localopts array: index: type:)
+    array=${array:-STORAGE} # be good, though, and use option
+    index=${index:-${ACTIVE[index]:-}}
+    [[ -n ${type:-} ]] && fail "type missing in call to $0"
+    insertGapNoIndentSiblings \
+        --array $array --insertion_point $index 
+    eval $array'[$index,type]=$type'
+}
+insertMultiParent () {
+#    prior to insert parent at location
+#    get type of subsumed record
+#    scan for siblings of same type
+#    then make new parent
+#    move all records to under new parent
+}
+
+insertGapNoIndentSiblings () {
+    # given an insertion point such as 1,2 - list all siblings (1,1 1,2 1,3)
+    # and return the maximum value of the sibling index component (3 in this
+    # example) work backwards from the max value sibling to the insertion
+    # point sibling index (2 in this example), shuffling them down by
+    # incrementing their value finally leaving an open gap at the top.
+
+    . <(localopts input_array: insertion_point:)
+
+    input_array=${input_array:-STORAGE} # be good, though, and use option
+
+    typeset -a e
+    e=(
+    '${'
+    '${'
+    '${(MOn)'           '# Match part of %%[0-9]##,type (below) reverse order'
+    $input_array
+    '[(I)'              '# Search through keys of array'
+    '${insertion_point' '# ...for keys matching the insert point'
+    '//(#b)'            '# ...modify that insert point search string'
+    '([0-9]##)(#e)'     '# ...by replacing the last numeric index component'
+    '/[0-9]##}'         '# ...and making it a regex to match its siblings'
+    ',type]'            '# ...add a type string to match key record field'
+    '%%[0-9]##,type}'   '# final index,type value from results (M) above'
+    '%%,type}'          '# and trim the ,type part off'
+    '[1]}'              '# take first of (reverse sorted) sibling indexes'
+    )
+    max_sib_id=${(ej..)e:#\#*} 
+    ip_sib_id=${(M)insertion_point%%[0-9]##}
+    ip_head=${insertion_point%%[0-9]##}
+    sibs=(${ip_head}{$max_sib_id..$ip_sib_id})
+    for sib_index in $sibs
+    do
+        new_sib_index=${sib_index//(#b)([0-9]##)(#e)/$(($match+1))}
+        for index in ${(P)${:-${input_array}[(I)$sib_index,*]}}
+        do
+            new_index=$new_sib_index${index##$sib_index}
+            eval $input_array'[$new_index]=${(P)${:-${input_array}[$index]}}'
+            unset "${input_array}[$index]"
+        done
+    done
+}
+
+insertGapIndentSingleBranch () {
+
+    # inserts a gap at a specific (existing) record and indents the
+    # original record and children to be new children of new "gap" record
+    # (a new record can then be written at that gap point)
+
+    . <(localopts input_array: insertion_point:)
+
+    input_array=${input_array:-STORAGE} # be good, though, and use option
+
+    typeset -a new_index
+    typeset -a make_insertion_point_descendants
+
+    make_insertion_point_descendants=(
+    '${'
+    '${(On)'            '# make this reversed so as not to overwrite existing'
+    '${(Pk)'            '# reference to array, returning keys only'
+    '${:-'              '# dummy parameter expansion'
+    '${input_array}'    '# ...consisting of value (name) of input_array'
+    '[(I)'              '# ...and a search subscript'
+    '$insertion_point'  '# ...returning both self...'
+    ',*'                '# ...and children of the insertion_point'
+    ']}'
+    '//,/\\000'         '# swap out commas for null bytes for numerical sort'
+    '}'
+    '}'
+    '//\\000/,'         '# having sorted, replace the commas'
+    '}'
+    )
+    make_old_value=(
+    )
+
+    typeset index
+    for index in ${(ej..)make_insertion_point_descendants:#\#*}
+    do
+        # this newindex expansion fails inside the following assignment
+        # subscript. why? for now assigning to a paramt outside the subscript
+        # (specifically, the comment stripping fails in the subscript, even
+        # when not using the eval/input array reference)
+        # note - i assume this is because i need to add @ for array output
+        # as a parameter flag, TODO
+
+        new_index=${index//(#b)(#s)($insertion_point)(*)/$match[1],1$match[2]}
+        eval $input_array'[$new_index]=${(P)${:-${input_array}[$index]}}'
+        unset "${input_array}[$index]"
+    done
+}
+
+isSet () {
+    # return true if value is set, even if non null
+    # takes parameter name, not value, natch
+    eval '(( ${+'${1}'} )) && return 0 || return 1'
+}
+parentIsSet () {
+    isSet "PARENT[$1]"
+}
+activeIsSet () {
+    isSet "ACTIVE[$1]"
+}
+setParent () {
+    setByIndex --index ${PARENT[index]:-} --field $1 --value "${2:-}"
+}
+unsetParent () {
+    unsetByIndex --index ${PARENT[index]:-} --field $1
+}
+setActive () {
+    setByIndex --index ${ACTIVE[index]:-} --field $1 --value "${2:-}"
+}
+unsetActive () {
+    unsetByIndex --index ${ACTIVE[index]:-} --field $1
+}
+setByIndex () {
+    . <(localopts index: field: array: value:)
+    array=${array:-STORAGE}
+    [[ -n ${index:-} && -n ${field:-} ]] || \
+        fail "bad call to $0 with missing
+            ${index:-index}
+            ${field:-field}
+            "
+    eval $array'[$index,$field]="${value:-}"'
+}
+unsetByIndex () {
+    . <(localopts index: field: array: value:)
+    array=${array:-STORAGE}
+    index=${index:-${ACTIVE[index]:-}}
+    field=${field:-${1:-}}
+    value=${value:-${2:-}}
+    unset "${array}[$index,$field]"
+}
+
+descendantIsSet () {
+    # return true if value is set, even if non null
+    # for any descendant record
+    #
+    # takes parameter name, not value, natch
+    # can
+    . <(localopts index: field: array:)
+    array=${array:-STORAGE}
+    index=${index:-${ACTIVE[index]:-}}
+    field=${field:-${1:-}}
+    [[ -n ${(P)${:-${array}[(I)$index,*,$field]}} ]]
+}
+
+descendantGetMatch () {
+    # get first available value for given field, index
+    # --key option returns key instead of value
+    # from descendants
+    . <(localopts index: field: array: key)
+    array=${array:-STORAGE}
+    index=${index:-${ACTIVE[index]:-}}
+    field=${field:-${1:-}}
+    # we could just take the first match from the (I) search but
+    # better to sort properly
+    first_match=${${${(n)${(P)${:-${array}[(I)$index,*,$field]}//,/\\000}}//\\000/,}[1]:-}
+    [[ -n $first_match ]] && {
+    isSet key && print $first_match || print ${(P)${:-${array}[$first_match]}}
+    }
+}
+
+getPartitionAncestor () {
+    . <(localopts index: field: array:)
+    array=${array:-STORAGE}
+    index=${index:-${ACTIVE[index]:-}}
+    field=${field:-${1:-}}
+    index_components=(${(s:,:)index[1,-2]})
+    while [[ -n $index_components ]]
+    do
+        if [[ ${(P)${:-${array}[${(j:,:)index_components},type]}} \
+            == partition ]]
+        then
+            if [[ -n $field ]]
+            then
+                print ${(P)${:-${array}[${(j:,:)index_components},$field]}}
+            else
+                print ${(j:,:)index_components}
+            fi
+        fi
+        index_components[-1]=()
+    done
+}
+
+ancestorIsSet () {
+    # return true if value is set, even if non null
+    # for any ancestor record
+    . <(localopts index: field: array:)
+    array=${array:-STORAGE}
+    index=${index:-${ACTIVE[index]:-}}
+    field=${field:-${1:-}}
+    index_components=(${(s:,:)index[1,-2]})
+    while [[ -n $index_components ]]
+    do
+        isSet "${array}[${(j:,:)index_components},$field]" && return 0
+        index_components[-1]=()
+    done
+    return 1
+}
+
+ancestorGetMatch () {
+    # returns first ancestor index that matches required field
+    # returns full index: 1,1,fieldname
+    . <(localopts index: field: array:)
+    array=${array:-STORAGE}
+    index=${index:-${ACTIVE[index]:-}}
+    field=${field:-${1:-}}
+    index_components=(${(s:,:)index[1,-2]})
+    while [[ -n $index_components ]]
+    do
+        isSet "${array}[${(j:,:)index_components},$field]" \
+            && print "${(j:,:)index_components},$field"
+        index_components[-1]=()
+    done
+    return 1
+}
+
+getOtherSiblings () {
+    # returns the list of siblings of the submitted index
+    # exluding the index itself
+    . <(localopts index: array:)
+    array=${array:-STORAGE}
+    index=${index:-${1:-${ACTIVE[index]:-}}}
+    typeset -a ia; ia=($index) #index as array for pattern exclusion
+    typeset pi=${${index%,[0-9]}:#$index} # parent index, 1,1->1 1->null
+    print -- ${${(Pk)${:-${array}[(I)${pi:-}${pi:+,}[0-9]#,type]}%%,type}:|ia}
+}
+
+getChildren () {
+    . <(localopts input_array: for_record:)
+    typeset a=${input_array:-STORAGE}
+    typeset r=${for_record:-${1:-}}
+    #print ${${(@nP)${:-${a}[(I)${r:-}${r:+,}[[:digit:]]}##,type]}%,type}
+    print ${(@nP)${:-${a}[(I)${r:-}${r:+,}[[:digit:]]##,type]}%,type}
+}
+
+
+:<< \
+------------------------------------------------------------------------------
+__genPayload subsidiary functions
+
+each of these assumes the scope of __genPayload and must be called from
+within it (i.e. there is no explicit parameter option passing on these)
+------------------------------------------------------------------------------
+genPartitions () {
+
+    . <(localopts start_at: )
+
+    typeset -a children; children=($(getChildren ${start_at:-}))
+
+    for record in $children; do
+
+        makeActive $record
+
+        if [[ ${ACTIVE[type]} == drive ]]
+        then
+            
+            sectionHeader partitions
+
+            if ! activeIsSet noclobber
+            then
+
+                msg1="# backup existing partition table"
+                msg2="# erase everything on drive!"
+                msg3="# convert if required, then create new gpt structure"
+                # "sgdisk --zap-all ${ACTIVE[devpath]} $msg2" 
+                eval $outputvar'+=(
+                "backupdir=\$(mktemp --tmpdir=/tmp -d part-backup-XXX)"
+                "backupfile=\"\$backupdir/${ACTIVE[devpath]//\//_}_backup\""
+                "sgdisk --backup=\$backupdir $msg1"
+                "print \"Partition table backed up to \$backupdir\" 1>&2"
+                "sgdisk --mbrtogpt --clear ${ACTIVE[devpath]}   $msg3"
+                )'
+
+            elif activeIsSet noclobber
+            then
+
+                eval $outputvar'+=(
+                "\n\n# DRIVE - ${ACTIVE[devpath]}\n$__"
+                "# Some/all contents of this drive are set to remain untouched"
+                "# in their present state via the --noclobber option, so NO full"
+                "# drive wipe/partition structure recreation will be performed."
+                )'
+            fi
+
+        elif [[ ${ACTIVE[type]} == partition ]] && ! activeIsSet noclobber
+        then
+
+            sgdisk_cmd="sgdisk"
+
+            if [[ ${(L)ACTIVE[size]} =~ "^max" ]]; then
+                sgdisk_cmd+=" --largest-new=${ACTIVE[partnum]}"
+                #moving to 0 in lieu of specific partnum
+                #sgdisk_cmd+=" --largest-new=0"
+                sgdisk_msg="# create partition filling remaining space"
+            elif [[ ${(L)ACTIVE[size]} =~ "ram" ]]; then
+                sgdisk_cmd+=" --new=${ACTIVE[partnum]}:0:"
+                #moving to 0 in lieu of specific partnum
+                #sgdisk_cmd+=" --new=0:0:"
+                sgdisk_cmd+="$(( ${${(f)$(cat /proc/meminfo \
+                   )}//(#bi)memtotal:[[:space:]]#([[:digit:]]#)*/$match} \
+                   / 1000000 ))G"
+                sgdisk_msg="# create partition matching system ram size"
+            else
+                sgdisk_cmd+=" --new=${ACTIVE[partnum]}:0:+${ACTIVE[size]}"
+                #moving to 0 in lieu of specific partnum
+                #sgdisk_cmd+=" --new=0:0:+${ACTIVE[size]}"
+                sgdisk_msg="# create fixed size partition"
+            fi
+
+            [[ -n "${(L)ACTIVE[bootable]:-}" ]] && \
+            sgdisk_cmd+=(" --attributes=${ACTIVE[partnum]}:set:0")
+
+            [[ -n "${ACTIVE[code]:-}" ]] && \
+            sgdisk_cmd+=" --typecode=${ACTIVE[partnum]}:${ACTIVE[CODE]}"
+
+            [[ -n "${ACTIVE[label]:-}" ]] && \
+                sgdisk_cmd+=" --change-name=${ACTIVE[partnum]}:${(q-)ACTIVE[label]}"
+
+            eval $outputvar'+=( "$sgdisk_cmd $sgdisk_msg")'
+
+        fi
+
+    done
+
+    # we processed one set of siblings, now walk down each branch
+    for record in $children; do
+        $0 --start_at $record
+    done
+}
+genEncryption () {
+
+    . <(localopts start_at: multipass:)
+
+    typeset -a children; children=($(getChildren ${start_at:-}))
+
+    for record in $children
+    do
+
+        makeActive $record
+
+        if [[ ${ACTIVE[type]} == encryption ]]; then
+
+            sectionHeader encryption
+
+            # if there is no passphrase from the template item
+            # and we haven't already queried for the passphrase
+            # (or we have multipass set), then output the query
+            # script block
+            if [[ -z ${ACTIVE[pass]:-} ]] && ! ${PASSQUERY:-false}
+            then
+                # as long as multipass isn't set, then make this
+                # the only time we create the query block
+                if ! ${(P)multipass:-false} && ! ${PASSQUERY:-false}
+                then
+                    typeset -g PASSQUERY=true
+                fi
+                m1=Passphrase m2=Confirmation ta='\\nTry again\\n' r="read -Ers "
+                eval $outputvar'+=(
+                "\\n# Query and confirm passphrase"
+                "while ! \${\${\${pass::=\$(\\"
+                "$r\"?$m1: \")}:#\$(\\"
+                "$r\"?$m2: \")}:+false};" "do print \"${(q)ta}\"; done")'
+            elif [[ -n ${ACTIVE[pass]:-} ]]
+            then
+                eval $outputvar'+=(
+                "# Saving a passphrase in a file is obviously insecure"
+                "pass=${(q)ACTIVE[pass]}")'
+            fi
+            luksf="print -r \$pass | "
+            luksf+="cryptsetup ${s::=${OPTIONS[luks,format]:-}}${s:+ }"
+            luksf+="${s::=${ACTIVE[luksformat]:-}}${s:+ }"
+            luksf+="luksFormat ${ACTIVE[devpath]}"
+            lukso="print -r \$pass | "
+            lukso+="cryptsetup open "
+            lukso+="${s::=${OPTIONS[luks,open]:-}}${s:+ }"
+            lukso+="${s::=${ACTIVE[luksopen]:-}}${s:+ }"
+            lukso+="${s::=${ACTIVE[ssd]+${OPTIONS[luks,open,ssd]:-}}}${s:+ }"
+            lukso+="${ACTIVE[devpath]} "
+            lukso+="${(q-)ACTIVE[label]:-${ACTIVE[devpath]//\//_}} "
+            activeIsSet noclobber || eval $outputvar'+=("\n# LUKS formatting" "$luksf")'
+            eval $outputvar'+=("\n# LUKS open" "$lukso")'
+        fi
+
+    done
+
+    # we processed one set of siblings, now walk down each branch
+    for record in $children; do
+        $0 --start_at $record --multipass $multipass
+    done
+
+}
+genSwap () {
+
+    . <(localopts start_at: )
+
+    typeset -a children; children=($(getChildren ${start_at:-}))
+
+    for record in $children
+    do
+
+        makeActive $record
+
+        if [[ ${ACTIVE[type]} == swap ]]
+        then
+
+            sectionHeader swap
+
+            mkswap="mkswap "
+            swapon="swapon "
+
+            if [[ -n ${ACTIVE[label]:-} ]]
+            then
+
+                swapid="-L ${(q-)ACTIVE[label]}"
+
+            else
+
+                msg1="# Get swap uuid (add --label on swap to use instead)\n"
+                msg2=" # get swap uuid if no label"
+                cmd="swap_uuid=\"\$(lsblk -no UUID ${ACTIVE[devpath]})\""
+                eval $outputvar'+=( "$msg1$cmd$msg2" )'
+                swapid="-U \$swap_uuid"
+
+            fi
+
+            swapssd+="${s::=${ACTIVE[ssd]+${OPTIONS[swap,ssd]:-}}}${s:+ }"
+            mkswap+="$swapid ${ACTIVE[devpath]}"
+            swapon+="$swapid $swapssd${ACTIVE[devpath]}"
+
+            activeIsSet noclobber || \
+                eval $outputvar'+=("$mkswap # make swap device")'
+            eval $outputvar'+=("$swapon # activate swap device")'
+
+        fi
+
+    done
+
+    # we processed one set of siblings, now walk down each branch
+    for record in $children; do
+        $0 --start_at $record
+    done
+
+}
+genFilesystem () {
+
+    . <(localopts start_at: )
+
+    typeset -a children; children=($(getChildren ${start_at:-}))
+
+    for record in $children
+    do
+
+        makeActive $record
+
+        if [[ ${ACTIVE[type]} == filesystem ]] && ! activeIsSet noclobber
+        then
+
+            sectionHeader filesystem
+
+            mkfscmd="mkfs.${f::=${ACTIVE[fstype]}} "
+            mkfscmd+="${s::=${(e)OPTIONS[mkfs]:-}}${s:+ }"
+            mkfscmd+="${s::=${(e)OPTIONS[mkfs,$f]:-}}${s:+ }"
+            (( ${+ACTIVE[ssd]} )) && {
+            mkfscmd+="${s::=${(e)OPTIONS[mkfs,ssd]:-}}${s:+ }"
+            mkfscmd+="${s::=${(e)OPTIONS[mkfs,$f,ssd]:-}}${s:+ }"
+            }
+            mkfscmd+="${s::=${ACTIVE[mkfsoptions]:-}}${s:+ }"
+            mkfscmd+="${ACTIVE[devpath]}"
+            eval $outputvar'+=(
+                "$mkfscmd  # make filesystem"
+                )'
+        fi
+
+    done
+
+    # we processed one set of siblings, now walk down each branch
+    for record in $children; do
+        $0 --start_at $record
+    done
+
+}
+genMounts () {
+
+    . <(localopts start_at: )
+
+    typeset -a children; children=($(getChildren ${start_at:-}))
+
+    : ${(AA)mountpoint_records::=${(kv)STORAGE[(I)*,mountpoint]%%,mountpoint}}
+    : ${(A)ordered_mountpoints::=${(nv)mountpoint_records}}
+
+    sectionHeader mount
+
+    for mountpoint in $ordered_mountpoints; do
+
+        record=${(k)mountpoint_records[(r)$mountpoint]}
+        makeActive $record
+        mountpath="${${:-${(P)mountroot%/}/${ACTIVE[mountpoint]#/}}%/}"
+
+        [[ -n ${STORAGE[(I)$record*noclobber]} ]] \
+            && noclobber=true  || noclobber=false
+
+        if [[ ${ACTIVE[type]} != subvolume ]] && ! $noclobber ; then
+            mountopts=()
+            mountopts+=(
+                "${OPTIONS[mount]}"
+                "${OPTIONS[mount,${ACTIVE[fstype]:-}]:-}"
+                )
+            (( ${+ACTIVE[ssd]} )) && {
+                mountopts+=(
+                "${OPTIONS[mount,ssd]}"
+                "${OPTIONS[mount,${ACTIVE[fstype]:-},ssd]:-}"
+                )
+            }
+            typeset -a mountcmd
+            mountcmd=("mount")
+            mountcmd+=("${(j:,:)${(u)=${(s:,:)mountopts}}}")
+            mountcmd+=("${ACTIVE[devpath]} ${mountpath}")
+            eval $outputvar'+=("$mountcmd")'
+        else # subvolume
+            eval $outputvar'+=(
+            "btrfs subvolume create ${(q-)mountpath}"
+            )'
+        fi
+
+    done
+
+}
+
+:<< \
+------------------------------------------------------------------------------
+__recordsArrayAddDrivePaths subsidiary functions
+------------------------------------------------------------------------------
+driveIsUnmounted () {
+    # takes argument 1 as drive to check, returns true if valid, unmounted
+    # drive, else false if mounted or unknown. If command line option
+    # --drives has been provided, then this check is skipped.
+    [[ -n ${DRIVES} ]] && {
+    report "Drives provided on command line; skipping system check."
+    return 0 }
+    drive=(${=1:-}); 
+    drives=(${(u)=${(@)"${(@f)"$(=lsblk -pndso NAME,MOUNTPOINT\
+        )"}"//(#b)(^ ##) ##(^ #)/}//[0-9]##/}); [[ -n ${drives:*drive} ]]
+}
+driveQuery () {
+    # driveQuery --outputvar OUTPUTVARNAME --earmarked
+    # --earkmarked is a list of drives that have been selected in previous
+    # passes but which haven't been mounted yet
+    . <(localopts earmarked: outvar: drives_array:)
+
+    # currently unmounted drives, allows user to select from list
+    drives=(${(u)=${(@)"${(@f)"$(=lsblk -pndso NAME,MOUNTPOINT\
+        )"}"//(#b)(^ ##) ##(^ #)/}//[0-9]##/})
+    earmarked=(${=earmarked:-}); drives=(${drives:|earmarked}) # remove earmarked
+    # list of drives, numbered, with sizes
+    typeset -i i=0; e="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
+    ((${#drives}==0)) && {
+        print "\nNo unmounted, unselected drives detected." 1>&2
+        print "Additional drive required. Please review current mounts.\n" 1>&2
+        exit 1; }
+    print "\nSelect from list of unmounted, unselected drives:\n" 1>&2
+    print ${${(@)drives}//(#m)*/$((++i)): $MATCH ($(=lsblk -dno SIZE $MATCH))} 1>&2
+    print "q: Quit\n" 1>&2
+
+    typeset confirm=""; while [[ -z ${(M)${confirm:-n}:#y} ]]; do
+        print -n "${${m:-}//?/\b}$e" 1>&2
+        m="Enter selection number (1"; [[ $i -gt 1 ]] && m+="-$i"; m+="/q) "
+        print -n "$m" 1>&2
+        typeset r="0"
+        # accept digits 1-$i if $i<10 (eg 1-3), otherwise digits 0-9
+        while [[ -z ${(M)${r}:#[q$((i>9?0:1))-$((i>9?9:$i))]#} ]]; do
+            read -ks r
+        done
+        [[ ${(L)r} == q ]] && {
+            print "${${m:-}//?/\b}${e}User selected quit.\n" 1>&2; exit;}
+        print -n "${${m:-}//?/\b}$e${m::=${drives[$r]} - correct? (y/n) }" 1>&2
+        read -qs confirm && print 1>&2 || print -n "\b" 1>&2
+    done
+    eval $outvar'=${drives[$r]}'
+}
+
+:<< \
+------------------------------------------------------------------------------
+miscellaneous utility functions
+------------------------------------------------------------------------------
+makeActive () {
+    # makes all existing fields for a record into active parameters
+
+    . <(localopts arr: rec: fields: var: par:)
+
+    typeset r a v p
+    r=${rec:-${1:-}}
+    a=${arr:-STORAGE}
+    v=${var:-ACTIVE}
+    p=${par:-PARENT}
+
+    unset $v; unset $p; typeset -Ag $v $p;
+    f=${fields:-${=FIELDS[boolean]}${=FIELDS[scalar]}}
+    unset ${=f}; typeset ${=f}
+    
+    # set ACTIVE values
+    # this commented out line sets fieldname=value, not array values
+    eval ${${(Pk)${:-${a}[(I)$r,[[:alpha:]]##]}}//(#b)($r,)(?##)/${${:-
+    }:+}ACTIVE[${match[2]}]=\${$a\[${(j::)match}\]}}
+
+    # set PARENT values
+    (( ${#r//[^,]/} > 0 )) && { # commas, so has parent
+    pr=${r%,?#}; eval ${${(Pk)${:-${a}[(I)$pr,[[:alpha:]]##]}}//${${:- 
+    }:+}(#b)($pr,)(?##)/PARENT[${match[2]}]=\${$a\[${(j::)match}\]}}
+    }
+
+    # set index convenience values
+    ACTIVE[index]=$r
+    PARENT[index]=${pr:-}
+
+}
+hangingIndent () {
+    . <(localopts linespacing wrapcol: text: margin: indent:)
+    text=${text:-$1}
+    wrapcol=${wrapcol:-$COLUMNS}
+    margin=${margin:-0}
+    indent=${indent:-0}
+
+    # wrap lines with leaders
+    typeset text_head="" text_tail=""
+    typeset -a wrapped
+
+    text="${(l.$margin...):-}$text"
+    wrapped=(${(f)${:-"$(print -- ${(e)text} | fold -s -w $wrapcol)"}})
+    text_head=${wrapped[1]:-}
+    text="${text[$((${#text_head}+1)),-1]## #}"
+    wrapped=(${(f)${:-"$(print -- ${(e)text} | fold -s -w $(($wrapcol-$margin-$indent)))"}})
+    print -- "$text_head"
+    [[ -z $wrapped ]] && ${linespacing:-false} && print || :
+    [[ -z $wrapped ]] ||
+        print -l -- "${(l.$(($margin+$indent))...):-}"${^wrapped}${linespacing+\\n}
+}
+getWrapped () {
+    # given a line, return the maximum value given wrapped words
+    # optionally return head and tail values to named parameters
+    . <(localopts width: text: head: tail:)
+    text=${text:-$1}
+    width=${width:-$COLUMNS}
+    wrapped=(${(f)${:-"$(print ${(e)text} | fold -s -w $width)"}})
+    [[ -n ${head:-} ]] && eval $head'=${wrapped[1]}'
+    [[ -n ${tail:-} ]] && eval $tail'=$wrapped[2,-1]'
+    [[ -z ${head:-}${tail:-} ]] && print -l -- $wrapped
+}
+debugDump () {
+    . <(localopts array:)
+    if [[ ${(Pt)array:-} == array ]]
+    then
+        print -l -- ${(P)array}
+    else
+        typeset array=${array:-${1:-STORAGE}}
+        typeset -a keys; typeset key; typeset -i padding
+        keys=(${${(n)${(Pk)array//,/\\000}}//\\000/,})
+        padding=${#${(OPk)array//?/#}[1]}
+        print
+        for key in $keys
+        do
+            hangingIndent --margin 2 --indent $(( $padding + 3 )) \
+                --text "${(r.$padding...)key} : ${(P)${:-${array}[$key]}}"
+        done
+    fi
+}
+debugLog () {
+    typeset x=$1; shift
+    typeset width=72
+    print -- "\n:<< \\" >> $DEBUGLOG
+    print -- "'$x${__::=${(r:$(($width-${#x}))::--:):-}}'" >> $DEBUGLOG
+    print -l -- ${*} >> $DEBUGLOG
+    print -- "$x${__}\n" >> $DEBUGLOG
+}
+fail () {
+    teelog --category FAILURE --color red "$*"
+    DEBUG=true
+    exit 1
+}
+ephemera () {
+    # just print, no logging
+    ${QUIET:-false} || print "$*" 1>&2 
+}
+report () {
+    teelog --category report --color green ${=*}
+}
+teelog () {
+    # print if not in quiet mode
+    # write to named arrays for later log/script output
+    . <(localopts category: color: noprint)
+    [[ -n ${category} ]] || { print "MISSING CATEGORY" 1>&2; exit 1 }
+    typeset -ag CATEGORIES
+    CATEGORIES+=($category)
+    ${QUIET:-false} || ${noprint:-false} || {
+        print -n "\\n${COLOR[${color:-default}]:-}" 1>&2;
+        print -n "$(print "${(U)category}: ${=*}" | fold -sw $COLUMNS)" 1>&2;
+        print "${COLOR[default]:-}" 1>&2;
+    }
+    typeset -ag REPORT_${(U)category}
+    eval REPORT_${(U)category}'+=("${${=@}}")'
+}
+reportLog () {
+    # dump report category arrays to script/log
+    (( ${+CATEGORIES} )) || return 0
+    typeset w=${width:-72} # preserve external scope
+    typeset cat lineitem width=$w
+    typeset category lineitem
+    print "\n\n# ${(U)SCRIPTNAME} ${(j:/:)${:-${(Uu)^=CATEGORIES}S}}\n#"
+    print "# The following comment sections contain messages"
+    print "# output during the $SCRIPTNAME processing"
+    for category in ${(Uu)=CATEGORIES}
+    do
+        [[ -n ${(P)${:-REPORT_$category}} ]] || continue
+        print "#\n# ${category}S ${___::=${(r:$(($width-${#category}-4))::==:):-}}"
+        for lineitem in ${(@P)${:-REPORT_$category}}
+        do
+            print "#"
+            print -l -- "# "${(@f)^"$(print $lineitem | fold -sw $width)"}
+        done
+    done
+}
+reportInferred () {
+    teelog --category inference --color cyan ${=*}
+}
+alert () {
+    teelog --category alert --color yellow ${=*}
+}
+warn () {
+    teelog --category warning --color red ${=*}
+}
+shrinkWrap () {
+    # smartWraps argument but first collapses to words, losing semantic space
+    . <(localopts wrap: indent: output: padding: margin:)
+    smartWrap ${=@} \
+        ${wrap:+--wrap $wrap} \
+        ${margin:+--margin $margin} \
+        ${indent:+--indent $indent} \
+        ${output:+--output $output} \
+        ${padding:+--padding $padding} \
+}
+smartWrap () {
+    # smartWrap "STRING_TO_PRINT" \
+    #       [--output OUTPUT_ARRAY_NAME] \
+    #       [--padding RIGHT_PADDING_INTEGER] \
+    #       [--indent LEFT_INDENT_INTEGER] \
+    #       [--margin LEFT_RIGHT_PADDING_INDENT_INTEGER]
+    #
+    # (without --output value, prints output to standard output)
+
+    . <(localopts wrap: indent: output: padding: margin:)
+
+    typeset w i p l print c=""
+
+    w=${wrap:-$COLUMNS}
+    i=${indent:-${margin:-0}}
+    p=${padding:-${margin:-0}}
+    l=${(l.$i...):-}
+    print=:
+    [[ -n ${output:-} ]] && { typeset -ag $output; print=false }
+
+    # the following expansion turns paragraphs with line breaks into single
+    # paragraphs with no line breaks,  while indented lines remain single
+    # paragraphs (mimics markdown style wrapping)
+    typeset -a e
+    e=(
+    '""'
+    '${(Qs:INDENTEDLINE:)^'
+    '${(j:INDENTEDLINE:)'
+    '${'
+    '${(@qs:NEWLINE :)'
+    '${(j: :)^'
+    '${'
+    '${'
+    '${(@qf)'
+    '${@}'
+    '}'
+    '//(#m)*/${${:-${(Q)MATCH}}:-NEWLINE NEWLINE}'
+    '}'
+    '//(#m)(#s)[[:blank:]]##/INDENTEDLINE$MATCH}'
+    '}'
+    '}#INDENTEDLINE}'
+    '}'
+    '}'
+    )
+
+    for line in "${(@ej::)e#\"\"}"
+    do
+
+        # trim indented lines, don't wrap
+        #if (( ${(M)#${(Q)line}## #} > 2 )); then
+        # adding requirement of blank line before indent block
+
+        if (( ${(M)#${(Q)line}## #} > 2 )) && [[ -z ${c} ]]; then
+            wrapline="$(\
+            print -P -- "$l%$((w-i-p))>...>${(l.$i...):-}${line}")"
+            $print && print -- "$wrapline" || eval $output'+=($wrapline)' 
+
+        # else wrap paragraphs
+        else
+
+            #wrapline="$(print -- $line | fold -s -w $w)"
+            #$print && print -- "$wrapline" || eval $output'+=("$wrapline")'
+            wraplines=("${:-$l${(@f)^$(print -- \
+                $line | fold -s -w $((w-i-p)))}}")
+            $print && print -l -- $wraplines || \
+                eval $output'+=("${(@)^wraplines}")'
+            notblock=true
+        fi
+        c=${${line:0:1}##[[:blank:]]#}
+    done
+
+}
+valueInListOrListAbsent () {
+    # valueInListOrListAbsent  LIST value
+    # valueInListOrListAbsent "LIST[subscript]" value
+    # Will return 0/true if no valid test array is found
+    # (i.e. this presumes validity in cases where no test data available)
+    (( ${(P)+${1:-}} )) || return 0 # no list
+    [[ -n ${(A)value::=${2:-}} ]] || return 0 # no value
+    [[ -n ${${(P)=${1:-}}:*value} ]]
+}
+valueInList () {
+    # valueInList  LIST value
+    # valueInList "LIST[subscript]" value
+    # Will FAIL and exit 1 if no valid test array is found
+    # If both test and list are empty, passes true/0 value
+    # If only one is empty, then fails
+    (( ${(P)+${1:-}} )) || {
+        printErr 0 "No list named $1 found in $0!"; exit 1 }
+    [[ -z ${(A)value::=${2:-}} ]] && [[ -z ${(P)1} ]] && return 0
+    [[ -n ${${(P)=${1:-}}:*value} ]]
+}
+localopts () {
+    # output parameter typeset, optarg parsing commands to be executed by
+    # function in order to make this logic reusable but still retain
+    # function-local variable scope
+    #
+    # must be called inside a function using this syntax:
+    #
+    # . <(getLocalOpts optname optargname:)
+    #
+    # optargs are specified with the standard zparseopts syntax other than no
+    # leading - is required for long argument names. Any leading - passed to
+    # this function as arguments are ignored. single characters are treated
+    # as standard single-dash prefixed options, multiple character opt names
+    # are treated as extended double-dash prefixed options.
+    #
+    # boolean options are assigned "true" values, otherwise are left unset
+
+    [[ -n $@ ]] || return 0
+
+    # grab just the boolean options (we'll use these in the eval below)
+    print "typeset -a _boolopts; _boolopts=("${${=@}:#*:-#}" '')"
+
+    # this section outputs something like:
+    #   typeset myoption myboolean
+    #   unset myoption myboolean
+    # making sure that all parameters are local to the function and cleared
+    # (localopts may be called repeatedly in a function and we want to
+    # ensure that it always outputs a known state, reseting values it is
+    # expected to parse)
+    typeset -a cleanopts; cleanopts=(${${@##-#}%%(:|+)*})
+    print "setopt TYPESET_SILENT"   # else our next typeset may output
+                                    # existing local parameter values
+    print "typeset $cleanopts; "    # make variables local to function
+    print   "unset $cleanopts; "    # clear these local variables
+
+    # this section outputs something like:
+    #   zparseopts -D -E -A o -- -myoption: -myboolean
+    typeset -a e
+    e=(
+    '${@'             '# expand all values passed to this function'
+    '//(#b)'          '# search using back references such as ${match[1]}'
+    '(#s)'            '# search from beginning of string'
+    '-#'              '# match and discard leading dashes'
+    '(*)'             '# match and retain as backreference the remainder'
+    '/'               '# replace with...'
+    '${(l.'           '# make an arbitrary length string (use left padding)'
+    '$(('             '# the length of which is calculated by...'
+    '${#match[1]'     '# the length of the first element of the match array'
+    '//[^[:WORD:]]/}' '# but just the [:WORD:] characters'
+    '>1?1'            '# if more than 1 WORD option name, make a SINGLE...'
+    ':0))'            '# else if 1 WORD character option name, make NO...'
+    '..-.):-}'        '# ...dash prefix'
+    '$match[1]'       '# followed by the actual match'
+    '}'
+    ) 
+    # evaluated, joined 'e' with no '#' comments
+    print 'zparseopts -D -E -A o -- '${(ej..)e:#\#*}';'
+
+    # this section outputs something like:
+    #   typeset myoption='my option value'; typeset myboolean=true
+    e=(
+    '${(@k)o'    '# all keys of the o array from zparseopts'
+    '//(#b)'     '# search using back references such as ${match[1]}'
+    '(#s)'       '# search from beginning of string'
+    '(-#)'       '# match and retain leading dashes as $match[1]'
+    '(*)'        '# match and retain remainder of key as $match[2]'
+    '/'          '# replace with...'
+    '$match[2]'  '# use just the WORD component ("keyname" from "--keyname")'
+    '='          '# use it as a parameter name and assign it a value'
+    '${(q-)'     '# the assigned value should be simple quoted'
+    'o[${(j..)match}]' '# join the "--" match[1] and the "keyname" match[2]'
+    ':-'                            '# if value is missing (but opt was present'
+    '${${(M)_boolopts:#${match[2]}}' '# and if it matches the boolean opts list'
+    ':+true}}}'                     '# set the value to true'
+    ';'
+    )
+    print 'eval '${(j..)e:#\#*} # unevaluated, joined 'e' with no '#' comments
+                                # (unevaluated here as it must be evaluated in
+                                # calling function to retain function-local
+                                # parameter scope
+
+}
+debugCapture () {
+    if [[ -n ${DEBUGLOG:-} ]]
+    then
+        typeset -p $1 >> $DEBUGLOG
+        print >> $DEBUGLOG
+    fi
+}
+track () {
+    typeset -ag ROLLCALL; ROLLCALL+=($1)
+    ${QUIET:-false} || {
+    print -n ${COLOR[cyan]:-} 1>&2
+    print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
+    print ${COLOR[default]:-} 1>&2
+    eval $@
+}
+
+# vim: set filetype=sh : 

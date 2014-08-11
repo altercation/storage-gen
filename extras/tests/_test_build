@@ -1,0 +1,4 @@
+partition
+    filesystem --mountpoint /home
+partition --size 30G
+    filesystem --mountpoint /

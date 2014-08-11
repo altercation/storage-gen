@@ -1,0 +1,23 @@
+# a comment
+    # a comment
+drive --devpath /dev/sdy --label "a label for a drive" --bootable --size=100
+    # a comment
+    partition --label "test"
+    partition --label "MyLabel  Has    Weird Spaces" # some comment here
+        encryption
+        encryption --label=cryptsystem
+            filesystem --fstype=btrfs --label=system
+                subvolume --label=svroot --mountpoint=/
+                subvolume --label=svhome --mountpoint=/home
+    partition --label "My Label \
+ is split"
+        encryption
+        encryption --label=\
+AnotherLine
+drive --label MyDrive --devpath /dev/sdx
+    partition --label "MyDrive \
+testing split"
+        filesystem
+drive
+    partition
+

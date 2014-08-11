@@ -1,0 +1,7 @@
+partition
+partition --remove --label swap
+encryption
+    partition --replace --label root
+    partition --keep --label home
+    partition --retain --label home
+

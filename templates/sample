@@ -1,0 +1,35 @@
+# Single device, encrypted, root is btrfs, no swap, includes unencrypted boot, no initial btrfs subvolumes
+
+==========================================================================
+SIZE   CODE   LABEL       PARENT_LABEL FSTYPE   MOUNT_POINT   MOUNT_OPTIONS
+--------------------------------------------------------------------------
+512M   ef00   EFI         -            fat      /boot         -
+RAM    8300   cryptswap   -            luks     -             -
+MAX    8300   cryptsys    -            luks     -             -
+-      -      swap        cryptswap    swap     -             -
+-      -      system      cryptsys     btrfs    -             -
+-      -      root        system       btrfs    /             -
+-      -      home        system       btrfs    /home         -
+==========================================================================
+
+==========================================================================
+PHYS    SIZE   CODE   LABEL       PARENT_LABEL FSTYPE   MOUNT_POINT   MOUNT_OPTIONS
+--------------------------------------------------------------------------
+-       -      -      sda
+-       512M   ef00   EFI         -            fat      /boot         -
+-       RAM    8300   cryptswap   -            luks     -             -
+-       MAX    8300   cryptsys    -            luks     -             -
+-       -      -      swap        cryptswap    swap     -             -
+-       -      -      system      cryptsys     btrfs    -             -
+-       -      -      root        system       btrfs    /             -
+-       -      -      home        system       btrfs    /home         -
+==========================================================================
+
+sda
+    sda1
+        cryptsys
+            system
+                root
+                home
+
+        
