@@ -150,6 +150,8 @@ __MAIN () {
     ${HELP:-false}   && { __usage --minimal; exit 0 }
     ${README:-false} && { __usage --readme; exit 0 }
     ${USAGE:-false}  && { __usage ; exit 0 }
+    ${LISTCODES:-false}   && { __usage --listcodes ; exit 0 }
+    ${LIST:-false}   && { __listTemplates ; exit 0 }
 
     [[ -z $SOURCEDEBUG ]] || { # prepare for debugsource usage
         [[ -f $SOURCEDEBUG ]] && {
@@ -225,14 +227,6 @@ __MAIN () {
         --siblings_array    SIBLINGS    \
         --valid_array       VALID
 
-    track __printTree                   \
-        --input_array       STORAGE     \
-        --tree_option       TREE        \
-        --input_filename    INPUTFILE   \
-        --input_filepath    SOURCEFILE
-    exit
-    debugDump; exit
-
     track __validateStructures          \
         --children_array    CHILDREN    \
         --required_array    REQUIRED    \
@@ -289,7 +283,1297 @@ __MAIN () {
         --comments_option   MINIFY      }
 
 }
+__assumeValues () {
+    . <(localopts \
+        storage_array: \
+        fields_array: \
+        inherit_array: \
+        valid_array: \
+        infer_off_option:
+        )
 
+    ${(P)infer_off_option:-false} && return 0
+
+    assumeTypeSpecificValues () {
+        . <(localopts start_at:)
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        typeset index
+        for index in $children
+        do
+            makeActive $index
+            assumeFilesystemValues --storage_array $storage_array   || return 1
+            assumePartitionValues  --storage_array $storage_array   || return 1
+            $0 --start_at $index    || return 1
+        done
+    }
+
+    while ! assumeTypeSpecificValues; do :; done
+}
+assumeFilesystemValues () {
+    . <(localopts storage_array:)
+    if [[ ${ACTIVE[type]:-} == filesystem ]]
+    then
+
+        typeset field amatch
+
+        # missing mountpoint, fstype, from parent or ancestor
+        for field in mountpoint fstype
+        do
+            if [[ -z ${ACTIVE[$field]:-} ]]
+            then
+                if [[ -n ${PARENT[$field]:-} ]] && false
+                then
+                    setActive $field ${PARENT[$field]}
+
+                    noteByIndex \
+                        --array $storage_array \
+                        --index $ACTIVE[index] \
+                        --note "Moved $field field from ${PARENT[type]} parent"
+
+                    unset "${storage_array}[$PARENT[index],$field]"
+                    return 1
+                elif [[ -n ${amatch::=$(ancestorGetMatch $field)} ]]
+                then
+                    setActive $field ${(P)${:-${storage_array}[$amatch]}}
+                    atype=${(P)${:-${storage_array}[${amatch%$field}type]}}
+
+                    noteByIndex \
+                        --array $storage_array \
+                        --index $ACTIVE[index] \
+                        --note "Moved $field field from $atype ancestor"
+
+                    unset "${storage_array}[$amatch]"
+                    return 1
+                fi
+            fi
+        done
+
+        # missing fstype, infer from child
+        if [[ -z ${ACTIVE[fstype]:-} \
+           && ${(P)${:-${storage_array}[${ACTIVE[index]},1,type]}:-} \
+           == subvolume ]]
+        then
+            eval $storage_array'[$ACTIVE[index],fstype]=btrfs'
+            setActive fstype btrfs
+            noteByIndex \
+                --array $storage_array \
+                --index $ACTIVE[index] \
+                --note "Set fstype to btrfs due to subvolume child"
+            return 1
+        fi
+
+        # missing fstype, set default value
+        if [[ -z ${ACTIVE[fstype]:-} ]]
+        then
+            setActive fstype ext4
+            noteByIndex \
+                --array $storage_array \
+                --index $ACTIVE[index] \
+                --note "Set fstype to ext4 as default value for missing fstype field"
+            return 1
+        fi
+    fi
+    
+}
+assumePartitionValues () {
+    . <(localopts storage_array:)
+    if [[ ${ACTIVE[type]:-} == partition ]]
+    then
+        # missing size and is NOT noclobber
+        if [[ -z ${ACTIVE[size]:-} ]] && ${${ACTIVE[noclobber]+false}-true}
+        then
+
+            typeset dsizekey dsize dtype
+            typeset -a sibs
+
+            # check for swap descendant for use below
+            typeset -A types
+            : ${(AA)sizes::=${(Pkv)${:-${storage_array}[(I)${ACTIVE[index]},[0-9]##,type]}}}
+            typeset swap_descendant=${(k)sizes[(r)swap]%,type}
+
+            # try to get first available size from any descendant
+            dsizekey=${(Pk)${:-${storage_array}[(i)${ACTIVE[index]},*,size]}:-}
+            dsize=${(Pv)${:-${storage_array}[$dsizekey]}:-}
+            dtype=${(Pv)${:-${storage_array}[${dsizekey%%size}type]}:-}
+            if [[ -n ${dsize:-} ]]
+            then
+                setActive size $dsize
+                unsetActive warn
+                noteByIndex \
+                    --array $storage_array \
+                    --index $ACTIVE[index] \
+                    --note "Claimed size from ${dtype:-} descendant"
+                unset "${storage_array}[$dsizekey]"
+                return 1
+
+            # if there is a swap descendant, it lacks a size
+            # so we infer system ram size
+            elif [[ -n ${swap_descendant} ]]
+            then
+                setActive size ram
+                unsetActive warn
+                noteByIndex \
+                    --array $storage_array \
+                    --index $ACTIVE[index] \
+                    --note "Set missing size to match system ram due to swap
+                            descendant"
+                return 1
+
+            # else count other siblings, if we're alone then max
+            # (swap check must be before this)
+            elif [[ -z ${(A)sibs::=$(getOtherSiblings)} ]]
+            then
+
+                setActive size max
+                unsetActive warn
+                noteByIndex \
+                    --array $storage_array \
+                    --index $ACTIVE[index] \
+                    --note "Set paritition size to be maximum available free
+                            space as it is the only partition listed"
+                return 1
+
+            # check for conditition of all existing peers
+            else
+
+                typeset sib all_sibs_pass=true
+
+                # a noclobber sibling is assumed to have a size
+                # (we don't need to know it since we won't be
+                # creating the partition), so we check here for
+                # either noclobber or size. if all other partitions
+                # have at least one of these values then we can
+                # safely assume this single partition that is
+                # missing a value is a max size partition
+                for sib in $sibs
+                do
+                    # TODO: if I change noclobber checks to
+                    # be a function rather than preset parameter
+                    # lookup, then this will also change
+                    if ( ! isSet "${storage_array}[$sib,noclobber]" ) || 
+                       ( ! isSet "${storage_array}[$sib,size]" )
+                    then
+                    else
+                        # sibling item without noclobber or size found
+                        all_sibs_pass=false
+                        break
+                    fi
+                done
+
+                if $all_sibs_pass
+                then
+                    setActive size max
+                    unsetActive warn
+                    noteByIndex \
+                        --array $storage_array \
+                        --index $ACTIVE[index] \
+                        --note "Set partition size to use maximum available
+                                space on drive as all other partitions are
+                                either either fixed size or are noclobber"
+                    return 1
+                fi
+
+                # any other future all-sibling checks go here
+
+                # we drop out of this loop here with an implicit
+                # return 0 as we've now done our best to infer
+                # partition values
+                warn "Unable to infer a size value for partition $record"
+
+            fi
+
+        fi
+    fi
+}
+
+:<< \
+------------------------------------------------------------------------------
+END MAIN EXECUTION
+
+everything ABOVE comprises main script sequence, everything BELOW is processed
+prior to the __MAIN function (so all functions below are defined *prior* to
+__MAIN execution. This includes the script environment section immediately
+following this, which is within the same scope as the preload.
+------------------------------------------------------------------------------
+
+:<< \
+------------------------------------------------------------------------------
+SCRIPT ENVIRONMENT & DEFAULT VALUES
+
+this is the only section within same scope as the preload, everything else
+should be a function
+------------------------------------------------------------------------------
+
+setopt ERR_RETURN ERR_EXIT NO_UNSET GLOBAL_EXPORT EXTENDED_GLOB NULL_GLOB \
+       DEBUG_BEFORE_CMD TYPESET_SILENT #WARN_CREATE_GLOBAL
+       #TODO - clean up script using WARN_CREATE_GLOBAL
+
+zmodload zsh/regex zsh/zutil
+
+SCRIPTNAME="${${SCRIPTPATH:=$(readlink -f $0)}:t}"
+SCRIPTROOT="${SCRIPTPATH:h}"
+SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
+
+TRAPEXIT () { (( $status > 0 )) && DEBUG=true; trapcleanup; }
+TRAPZERR () {
+    teelog --category UNHANDLED_ERROR --color red "$(print -l -- ${ROLLING:-})"
+    DEBUG=true; trapcleanup
+    print "\n${COLOR[red]:-}Exit due to unhandled error." 1>&2; }
+trapcleanup  () {
+    [[ -z ${ROLLCALL:-} ]] || print -l -- "# "${^ROLLCALL} >> ${DEBUGLOG:-/dev/null}
+    reportLog >> ${DEBUGLOG:-/dev/null}
+    ${DEBUG:-false} && ${${DEBUGLOG:+true}:-false} && { mv $DEBUGLOG $DEBUGLOG_SAVE;
+    print "\n${COLOR[red]:-}Debug log saved to $DEBUGLOG_SAVE" 1>&2; } || :
+    [[ -d "${SCRIPTTEMP:-}" ]] && rm -rf "$SCRIPTTEMP"; }
+
+
+:<< \
+------------------------------------------------------------------------------
+Main Sequence Functions
+------------------------------------------------------------------------------
+__processScriptOptions () {
+
+    # Command line options
+    #
+    # The OPTS_* arrays below determine the actual processed options as well
+    # as the help output. Each UPPERCASEOPTION is converted to a --lowercase
+    # the command line value of which is assigned to the UPPERCASE parameter
+    # name. Standard OPTS_* items are also set with a single letter short
+    # form in lowercase (e.g. -l) unless they are in the *_ALT arrays, which
+    # are set using uppercase short form (e.g. -U). *_ALT arrays contain
+    # alternate options that are uppercased as single letter options (long
+    # options remain lowercase as they are, or should be, unique).
+    #
+    # --help and --usage display the short and long options computed from the
+    # arrays below. any *_ARG_* values (options with an argument) will output
+    # with the first line of the description as the argument placeholder.
+    # --help displays a brief version of each description consisting of the
+    # first line only of item.
+
+    typeset -Ag \
+        OPTS_BOOL OPTS_BOOL_ALT \
+        OPTS_ARGS OPTS_ARGS_OPT OPTS_ARGS_ALT OPTS_ARGS_OPT_ALT
+
+    OPTS_BOOL=(
+
+    HELP        "Show this help information.
+                 Use --usage for expanded help."
+
+    NOQUERY     "No queries, make best guesses.
+                 Don't ask for any user input. Pick first obvious choices for the
+                 user, for example use first available drives (internal or as
+                 provided by the --drives option), automatically match partitions
+                 when there is only one existing partition that matches the values,
+                 etc. Best to run without this option first to see what happens."
+
+    IGNORE      "Ignore live system environment.
+                 Disregards the current systems drive and partition environment.
+                 Allows script to create output based on *only* the provded
+                 template. No interactive queries will be run for missing drive
+                 or partition information. Drives must either be set in the drive
+                 entries in the template or using the --drives option. This allows
+                 creation of scripts that don't match the current system
+                 configuration. This is different from full environment simulation
+                 with the --debug and --debugsource options."
+
+    KEEP        "Keep all existing partitions.
+                 Same as setting the --noclobber option on each drive. Prevents
+                 existing partitions from being affected."
+
+    MINIFY      "No comments in the final script.
+                 Turns off all comments and blank lines in the script output.
+                 Removing these does not change the functionality of the final
+                 script."
+
+    QUIET       "No messages or warnings.
+                 Only display actual script (or tree) output, skip informational
+                 messages (the informational messages will still be output in the
+                 script itself unless the --commentsoff option is selected. With
+                 this option, a single error message will be output to standard
+                 error if the script fails."
+
+    SCRIPT      "Always display script output.
+                 This happens by default UNLESS either the --tree or --output
+                 options have been passed on the command line. In these cases,
+                 passing the --script option restores the visual output of the
+                 script as well."
+
+    TREE        "Print tree diagram of output.
+                 After evaluating the storage template, a tree relationship is
+                 displayed with colors indicating key values (unless --nocolors
+                 has been used). Useful in combination with the something like
+                 \`watch -cn1\'. This option precludes final script output unless
+                 either the --script or --output options have also been provided."
+
+    NOQUERY     "Skip all interactive queries.
+                 Normal script execution results in queries for drive and
+                 partition selection if those values have not been provided and
+                 cannot be inferred otherwise. This skips those queries. Use this
+                 with the --yes option to answer all yes/no queries with a default
+                 value."
+
+    FSTAB       "(not yet implemented)"
+
+    USAGE       "Displays detail usage information.
+                 Adds a summary of the types of options and arguments that are valid
+                 for each storage type entry. Redirect to a file or pipe through a
+                 pager such as less. See also the $SCRIPTNAME README available in
+                 the project git repository."
+
+    )
+    OPTS_ARGS=(
+
+    DRIVES      "'/dev/sdX,/dev/sdY'
+                 List of drive paths to use in output.
+                 Force the use of drives from a comma separated list, for
+                 example: --drives '/dev/sda' or --drives '/dev/sda,/dev/sdc'.
+                 Drives will be assigned to missing devpath values in storage
+                 definition file using these values, in order. If used in
+                 combination with the --ignore option, then the drives listed
+                 do not need to exist on the current system. If the --drives
+                 option is used without the --ignore option, then the current
+                 system is checked for the presence of these drives first."
+
+    ROOTMOUNT   "'/MOUNT/ROOT/PATH'
+                 Preinstall mountpoint root path.
+                 Set mount root directory (if not set, use the default '/mnt').
+                 Argument is a valid, absolute path to an existing directory.
+                 This path is used during system installation as a chroot  and
+                 is *not* recorded in any fstab."
+
+    OUTPUT      "OUTPUT_FILE_NAME
+                 Optional output filename.
+                 If this option is provided, the final executable script will be
+                 written to the path provided. If not set, script is displayed on
+                 standard output and may be saved using redirection."
+
+    )
+    OPTS_ARGS_OPT=(
+    LIST        "List builtin or discoverable templates (from the $SCRIPTNAME
+                 template directory)."
+    )
+    OPTS_BOOL_ALT=(
+
+    DEBUG       "Turn on debug tracking & always save debug log.
+                 This option turns on minimal debug tracking and rolling script
+                 trace capture (in case of error). This has a minimal performance
+                 impact so is normally off. The debug log is saved by by default
+                 if the script encounters an error, and the debug file path will be
+                 displayed in that case or with the use of this option. This debug
+                 file contains the block device configuration and the original
+                 template file content. It may be submitted with bug reports."
+
+    README      "Output usage in README markdown format."
+
+    COLOROFF    "Do not use colors in console output."
+
+    INFEROFF    "Turn off inference of items (drives, partitions, defaults)."
+
+    LISTCODES   "List GUID type codes in short and long."
+
+    MULTIPASS   "Output individual passphrase query blocks.
+                 If multiple encryption items exist $SCRIPTNAME normally creates a
+                 single passphrase query in the final executable script. With this
+                 option, each encryption device without a preset passphrase will
+                 receive a separate passphrase query step in the final script.
+                 Yes, it's a multipass,"
+
+    NOMATCH     "Turn off match attempts for noclobber partitions. Normally, if a
+                 the --noclobber option has been specified (or inherited) by a
+                 partition entry in the storage template (or a partition implied
+                 by another entry), $SCRIPTNAME will make best effort to match it
+                 to an existing partition based on available information in the
+                 template and on the system itself. See the --usage section on
+                 matching for more information."
+
+    VALUESDUMP  "Dump environment values in human readable format for debugging."
+
+    WARNOFF     "Turn off warning query in script output."
+
+    )
+    OPTS_ARGS_ALT=(
+
+    SOURCEDEBUG "FILENAME
+                 Simulate environment from debug file.
+                 $SCRIPTNAME will read the captured debug output from the provided
+                 file and use it to simulate a system environment. Simulated values
+                 include the block device configuration and the original template
+                 file content."
+
+    TEMPLATE    "TEMPLATE_FILE_PATH
+                 Alternative syntax for source template.
+                 $SCRIPTNAME normally uses arg 1 (the first 'unnamed' argument) on
+                 the command line as the name (or path) of the template to use.
+                 This option is merely a more explicit alternative to that."
+
+    )
+
+    # capture the original command line for logging
+    typeset command_line="$SCRIPTNAME $*"
+
+    # check for collisions in option short/long forms
+    typeset -a allopts; allopts=(
+    ${(k)=OPTS_BOOL//(#b)(*)/${${(L)=match}:0:1} ${(L)match}}
+    ${(k)=OPTS_BOOL_ALT//(#b)(*)/${${(U)=match}:0:1} ${(L)match}}
+    ${(k)=OPTS_ARGS//(#b)(*)/${${(L)=match}:0:1} ${(L)match}}
+    ${(k)=OPTS_ARGS_OPT//(#b)(*)/${${(L)=match}:0:1} ${(L)match}}
+    ${(k)=OPTS_ARGS_ALT//(#b)(*)/${${(U)=match}:0:1} ${(L)match}}
+    ${(k)=OPTS_ARGS_OPT_ALT//(#b)(*)/${${(U)=match}:0:1} ${(L)match}}
+    )
+    if [[ ${#allopts} -gt ${#${(u)allopts}} ]]
+    then
+        typeset allopt
+        for allopt in $allopts
+        do
+            if (( ${(M)#allopts:#$allopt} > 1 ))
+            then
+                print "\nSCRIPT OPTION COLLISION:" 1>&2
+                if [[ ${(c)#${(Mu)allopts:#$allopt}} -eq 1 ]]
+                then
+                    print -- "-$allopt --${allopts[$((${allopts[(i)$allopt]}+1))]}" 1>&2
+                    print -- "-$allopt --${allopts[$((${allopts[(I)$allopt]}+1))]}" 1>&2
+                else
+                    print -- "-${allopts[$((${allopts[(i)$allopt]}-1))]} -$allopt" 1>&2
+                    print -- "-${allopts[$((${allopts[(I)$allopt]}-1))]} -$allopt" 1>&2
+                fi
+                break
+            fi
+        done
+        fail "Two $SCRIPTNAME options have identical short or long forms;
+              Please change one of the option names or move to an ALT
+              or long form only option array."
+    fi
+
+    # run zparseopts on all defined script options
+    eval zparseopts -D -E -- \
+    ${(k)OPTS_BOOL//(#b)(*)/${${(L)=match}:0:1}=$match -${(L)match}=$match} \
+    ${(k)OPTS_BOOL_ALT//(#b)(*)/${${(U)=match}:0:1}=$match -${(L)match}=$match} \
+    ${(k)OPTS_ARGS//(#b)(*)/${${(L)=match}:0:1}:=$match -${(L)match}:=$match} \
+    ${(k)OPTS_ARGS_OPT//(#b)(*)/${${(L)=match}:0:1}::=$match -${(L)match}::=$match} \
+    ${(k)OPTS_ARGS_ALT//(#b)(*)/${${(U)=match}:0:1}:=$match -${(L)match}:=$match}
+    ${(k)OPTS_ARGS_OPT_ALT//(#b)(*)/${${(U)=match}:0:1}::=$match -${(L)match}::=$match} \
+
+    # clean up the parsed options and assign to variables matching their names
+    # (so that TESTMODE, for example. receives a true/false value, DRIVES
+    # receives and array value, etc.)
+    eval typeset -g \
+    ${(k)OPTS_BOOL//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-false}} \
+    ${(k)OPTS_BOOL_ALT//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-false}}
+    eval typeset -ag ${(k)OPTS_ARGS}
+    eval ${(k)OPTS_ARGS//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
+    eval ${(k)OPTS_ARGS_ALT//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
+
+    # the input file can be set by --input or arg 1
+    typeset -g INPUTFILE=${INPUT:-${1:-}}
+
+    print "MOUNTROOT IS ${MOUNTROOT:-}"
+    print "MOUNTROOT IS ${(t)MOUNTROOT:-}"
+    # initializeScriptParameters
+    # Make sure we have user specified or default mountroot directory
+    typeset m="${MOUNTROOT:-}"
+    # we're going to either assign or reassign as a scalar and it comes
+    # in as an array from our options processing
+    # so unset first, then assign existing or default value
+    # TODO: this could be a one liner if I unset inside an assignment
+    # or possibly if I force set?
+
+    unset MOUNTROOT; typeset -g MOUNTROOT="${m:-/mnt}"
+    [[ ${MOUNTROOT} =~ "/" ]] || MOUNTROOT="${$(pwd)%/}/${MOUNTROOT}"
+    [[ -d ${MOUNTROOT} ]] || {
+        __usage
+        fail "ERROR: Mountroot directory $MOUNTROOT not found."
+        }
+
+    # Convert DRIVES values from csv
+    [[ -n ${DRIVES:-} ]] && { DRIVES=(${=${(s:,:)DRIVES}}) }
+
+    if ! ${COLOROFF:-false}; then
+        typeset -Ag COLOR COLOR
+        autoload colors; colors
+        for color in ${(k)fg_no_bold}; do
+            COLOR[$color]=${fg_no_bold[$color]}
+            COLOR[$color,bold]=${fg_bold[$color]}
+        done
+    else
+        unset COLOR
+    fi
+
+    # debug log and a path to move it to if script fails
+    # (so don't make user re run with --debug on a bad error)
+    # DLHOST=${SCRIPTNAME}${${(%)${:-%D}}//-/}.debug
+    # DLTIME=${SCRIPTNAME}${HOST:+-}${HOST:-}.debug
+    typeset -g DEBUGLOG_BASE=${SCRIPTNAME}.debug
+    typeset -g DEBUGLOG_SAVE=/tmp/$DEBUGLOG_BASE
+    typeset -g DEBUGLOG=$SCRIPTTEMP/$DEBUGLOG_BASE
+    if [[ -e $DEBUGLOG_SAVE ]]
+    then
+        rm -f $DEBUGLOG_SAVE || \
+        fail "Cannot remove existing debug log at $DEBUGLOG_SAVE"
+    fi
+    # prep debug log header
+    typeset -a debug_log_header
+    debug_log_header=(
+    "# ${(U)SCRIPTNAME} DEBUG LOG"
+    "# DATE:         $(date)"
+    "# RUN AS:       ${${(M)USERNAME:#root}:-non-root}"
+    "# ZSH VERSION:  $ZSH_VERSION"
+    "# COMMAND LINE: $command_line"
+    "# SUBMIT TO:    $SCRIPTNAME@ethanschoonover.com\n"
+    "typeset -gA BLOCKENV"
+    "typeset -ga FILERAW"
+    )
+    print -l -- $debug_log_header > $DEBUGLOG
+
+    ${DEBUG:-false} && {
+    print "ROLLING TRACKING ON"
+        typeset -ag ROLLING
+        TRAPDEBUG () {
+            for i in {1..4}
+            do
+                ROLLING[$i]=${ROLLING[$((i+1))]:-}
+            done
+            ROLLING[5]=$ZSH_DEBUG_CMD;
+        }
+    } || {
+    track () { eval $@ }
+    }
+
+}
+__initializeRulesets () {
+
+    typeset -Ag FIELDS VALID VALUES CHILDREN SIBLINGS OPTIONS REQUIRED \
+        ITEMOPTIONS_BOOL ITEMOPTIONS_SCAL DESCRIPTION PRESET CODES INHERIT \
+        CONFLICTS EQUIVALENTS ANCESTORS DESCENDANTS
+
+    # the types of storage devices we know about
+    # ORDER IS IMPORTANT. Items to the left are *potential* ancestors of items
+    # to the right
+    VALUES[type]="drive partition logical encryption swap filesystem subvolume"
+
+    # known fstypes and short GUID codes TODO: replace the code list
+    # with the fixed list below, which includes translation to long codes
+    VALUES[fstype]=${${=${listing::=$(print ${:-=mkfs}.*)}}##$(print =mkfs).}
+    VALUES[code]=${(uM)${:-$(sgdisk -L)}:#([0-9]|[a-f])(#c4)}
+    print "\n# fstypes present via mkfs: ${(@)VALUES[fstype]}" >> $DEBUGLOG
+
+    # the fields which are valid for each storage item type
+    # with 'common' fields being valid for all types
+    # these are checked AFTER inheritance and conversions for final
+    # validity, and are use DURING inheritance to determine which
+    # type inherits which fields
+    VALID=(
+    common      "notes auto"
+    drive       "device ssd"
+    encryption  "luksformat luksopen pass label encrypt"
+    filesystem  "fstype mountpoint label"
+    logical     ""
+    partition   "bootable code size partnum new keep replace label"
+    subvolume   "mountpoint"
+    swap        "label"
+    )
+
+    # the fields which are required for each storage item type
+    # some of these will either be inferred or set as defaults,
+    # but this list is used for validity check
+    REQUIRED=(
+    common      ""
+    drive       ""
+    encryption  ""
+    filesystem  "fstype"
+    logical     ""
+    partition   "size"
+    subvolume   ""
+    swap        ""
+    )
+
+    # migrated these to logic, may need to move them back here TODO
+    DEFAULTS=(
+    common      ""
+    drive       ""
+    encryption  ""
+    filesystem  ""
+    logical     ""
+    partition   ""
+    subvolume   ""
+    swap        ""
+    )
+
+    # Inheritable values
+    # inheritance retains the value on the source record (if it is valid)
+    # else it claims it from the source. this is only attempted if the
+    # field is valid for the record in question.
+    INHERIT=(
+    up          "ssd bootable replace keep"
+    down        "ssd keep"
+    any         "device partnum fstype size mountpoint code devpath"
+    )
+
+    # values that are invalid on the same entry
+    CONFLICTS=(
+    keep        "replace"
+    )
+
+    # the valid child device types for a given device type
+
+    # removing filesystem from valid drive child until add back in
+    # code to check siblings during inflation phase
+    # drive       "partition filesystem"
+    CHILDREN=(
+    drive       "partition"
+    encryption  "filesystem swap"
+    filesystem  "subvolume"
+    logical     ""
+    partition   "encryption filesystem swap"
+    subvolume   "subvolume"
+    swap        ""
+    )
+
+    # default parent values
+    PARENTS=(
+    drive       ""
+    encryption  "partition"
+    filesystem  "partition"
+    logical     ""
+    partition   "drive"
+    subvolume   "filesystem"
+    swap        ""
+    )
+
+    # multiple siblings of the following type are subsumed by a single parent
+    # (when said parent is absent)
+    # this needs to be addressed by the make step in inflation
+    # TODO: unused - may not be an intuitive solution and currently only
+    # required for subvolumes as there is a single top level drive creation
+    # during inflation).
+    MULTI=(
+    drive       ""
+    encryption  ""
+    filesystem  ""
+    logical     ""
+    partition   "drive"
+    subvolume   "filesystem"
+    swap        ""
+    )
+
+    # the valid sibling device types for a given device type
+    SIBLINGS=(
+    drive       "drive"
+    encryption  ""
+    filesystem  ""
+    logical     ""
+    partition   "partition"
+    subvolume   "subvolume"
+    swap        ""
+    )
+
+    # compile lists of valid descendants per type
+    # (base on CHILDREN and VALUES)
+    compileValidDescendants () {
+        getChildTypes () {
+            typeset child
+            for child in ${=CHILDREN[$1]}
+            do
+                print $child
+                [[ $child != $1 ]] && getChildTypes $child
+            done
+        }
+        print ${(u):-$(getChildTypes $1)}
+    }
+    for type in ${=VALUES[type]}
+    do
+        DESCENDANTS[$type]=$(compileValidDescendants $type)
+    done
+
+    # compile lists of valid ancestors per type
+    # (base on CHILDREN and VALUES)
+    compileValidAncestors () {
+        # use order of values to ensure outer-to-inner order
+        getParentTypes () {
+            typeset type parent
+            typeset -a parents
+            # from inner to outer
+            for type in ${(Oa)=VALUES[type]}
+            do
+                if [[ -n ${CHILDREN[$type]:-} && \
+                      -n ${(M)${=CHILDREN[$type]}:#$1} ]]
+                then
+                    parents+=($type)
+                fi
+            done
+            print $parents
+            for parent in ${=parents}
+            do
+                [[ $parent != $1 ]] && getParentTypes $parent
+            done
+        }
+        # from outer to inner
+        print ${(Oau):-$(getParentTypes $1)}
+    }
+    for type in ${=VALUES[type]}
+    do
+        ANCESTORS[$type]=$(compileValidAncestors $type)
+    done
+
+
+    # options used during filesystem/luks/swap format/mount/open/activate
+    OPTIONS=(
+
+    "# mkfs"        "options that will be applied to various mkfs commands
+                     based on fstype, ssd"
+
+    mkfs            ''
+    mkfs,ssd        ''
+    mkfs,btrfs      '--force${label:+ --label ${(q-)label:-}}'
+    mkfs,btrfs,ssd  '--metadata single' # see man mkfs.btrfs
+    mkfs,vfat       '-F32 ${label:+ -n }${label:-}'
+
+    "# mount"       "options that will be applied to mount command based on
+                     fstype, ssd values"
+
+    mount           'defaults,x-mount.mkdir'
+    mount,ssd       'noatime'
+    mount,btrfs     'compress=lzo,space_cache,autodefrag,inode_cache'
+    mount,btrfs,ssd 'ssd,discard'
+
+    "# swap"        "swap and ssd specific options"
+
+    swap            ''
+    swap,ssd        '--discard'
+
+    "# LUKS"        "both luks formatting and option options"
+
+    luks,format     ''
+    luks,open       ''
+    luks,open,ssd   '--allow-discards'
+
+    )
+
+    # --force-password below allows weak passphrases (for testing only)
+    if ${FORCE:-false} || ${TEST:-false}; then
+        OPTIONS[luks,format]='--force-password'
+    fi
+
+    # TODO: all presets at this point will be for partitions, though we can stick
+    # fstype, etc. info into them if we want to push out filesystems
+    # alternately, preset could be a new type
+    # e.g. preset biosboot
+    # or   preset --name biosboot
+    # i like this less since it's not obvious to the user reading the template
+    # that it's a partition
+    # better to do:
+    # partition --preset biosboot
+    # the --preset values should be appended AFTER all other values in the line
+    # that way anything else will override the presets
+    # e.g.
+    # partition --preset biosboot --label 'my custom label'
+    # would expand to
+    # partition --preset biosboot --label 'my custom label' --size 1M --code ef02
+    #   --label 'BIOS Boot Partition'
+    # and only the first label would be used. that way user doesnt worry about
+    # location of override values. this is essentially how i handles defaults.
+
+    PRESET=(
+    biosboot                    "--size 1M
+                                 --code ef02
+                                 --label 'BIOS Boot Partition'"
+
+    efisys                      "--mountpoint /boot/efi
+                                 --size 200M
+                                 --code ef00
+                                 --label 'EFI System Partition'"
+
+    linuxboot                   "--mountpoint /boot
+                                 --size 200M
+                                 --code 8300
+                                 --label 'Linux Boot Partition'"
+
+    existing-windows-recovery   "--noclobber
+                                 --code 2700"
+
+    existing-linux-home         "--mountpoint /boot
+                                 --size 200M
+                                 --code 8300
+                                 --label 'Linux Boot Partition'"
+    )
+    ITEMOPTIONS_BOOL=(
+
+    bootable        "Identifies the storage item (drive, partition,
+                     filesystem) as a bootable device. May not always impact
+                     the item initialization."
+
+    encrypt         "Used on storage items that may be children of encryption
+                     to imply an encryption entry in the template file
+                     without adding it explicitly."
+
+    drivekeep            "For drives, prevents any existing partitions from being
+                     removed, even without explicitly identifying them with
+                     noclobber."
+
+    keep            "Keen an existing partition. The partition may be specified
+                     by --partnum (1), --devpath (/dev/sda1), or a matching
+                     unique value such as label, code, or even size (assuming
+                     and exact match of label or size). If using code to match
+                     an existing partition, either the sgdisk short code or
+                     the long code version of it may be used. Run $0 --listcodes
+                     to list all codes."
+
+    noclobber       "Prevents changes to the item that matches the devpath
+                     specified. For instance, if --noclobber is set on a drive
+                     entry, and the path of the drive is identified as
+                     /dev/sda, then no changes will be made to /dev/sda or any
+                     child elements of /dev/sda."
+
+    replace         "For partitions, tries to match an existing partition based
+                     on partnum, devpath, code, label or size and then creates
+                     a replacement command (deletes and then recreates)."
+
+    ssd             "Identifies a drive as an ssd (if no devpath is specified
+                     for a device, you will be prompted to select a valid drive
+                     from a list and will also be prompted to identify is as
+                     either a mechanical or ssd drive)."
+    )
+    ITEMOPTIONS_SCAL=(
+
+    code            "CODE
+                     The partition GUID code as used by sgdisk. Can be either
+                     an sgdisk two-byte hex code such as 'ef02', or a full GUID
+                     type code such as 'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7'
+                     (see 'man sgdisk' and 'sgdisk -L'). Note that this is *not*
+                     a UUID."
+
+    description     "'DESCRIPTION'
+                     A short description that can be reported during script
+                     execution. Currently not utilized. Standard shell-script
+                     style comments prefixed by a # sign are also acceptable in
+                     the storage definition file and will be ignored by the
+                     script."
+
+    devpath         "/DEV/PATH
+                     The device path, for instance /dev/sda for a drive,
+                     /dev/sda1 for a partition, /dev/mapper/cryptvolume for an
+                     open luks device, etc. Not required. If no devpath is
+                     specified for a drive, you will be prompted to select a
+                     valid drive when the script executes."
+
+    fstype          "FILESYSTEM-NAME
+                     Filesystem types that this script knows about. Each fstype
+                     has a corresponding 'mkfs.*' command. Known filesystem
+                     types on this system include ${(@)VALUES[fstype]}"
+
+    label           "'ItemLabel'
+                     A human readable label for a partition, filesystem,
+                     encrypted device, etc."
+
+    luksformat      "'OPTIONS LIST'
+                     Enclose in single quotes. List of command line options
+                     applied by cryptsetup when formatting a new dm-crypt
+                     device in LUKS mode. For example:
+
+                     --luksformat '--cipher aes-xts-plain64 --key-size 256'
+                     
+                     Safe defaults are applied if this is absent."
+
+    luksopen        "'OPTIONS LIST'
+                     Enclose in single quotes. List of command line options
+                     applied by cryptsetup when opening a new or existing
+                     dm-crypt device in LUKS mode. For example:
+
+                     --luksopen '--cipher aes-xts-plain64 --key-size 256'
+
+                     Safe defaults are applied if this is absent."
+
+    mkfsoptions     "'OPTIONS LIST'
+                     Enclose in single quotes. List of command line options
+                     applied to a filesystem mkfs command when formatting."
+
+    mountoptions    "MOUNT,OPTIONS
+                     Comma separated list of options to apply to a specific
+                     storage device containing a filesystem when mounting.
+                     Generally not required. For example, the default
+                     mountoptions value applied to a btrfs filesystem is:
+
+                     '--force\${label:+ --label }\${label:-}'
+                     
+                     Note that use of other option values is possible by
+                     simply using the variable form of the option name (e.g.
+                     '\$label' for option '--label'."
+
+    mountpoint      "/MOUNT/POINT
+                     The absolute path to the mountpoint for a storage item.
+                     If not set, then the item will not be mounted!"
+
+    partitioning    "NOT YET IMPLEMENTED
+                     Type of partitioning. Defaults to 'gpt'. Can be set to
+                     gpt, mbr, or btrfs."
+
+    partnum         "PARTITION_NUMBER
+                     This is automatically assigned but may also be specified
+                     manually on noclobber partitions or on partitions you wish
+                     to manually control the order/partition number of."
+
+    pass            "PASSPHRASE
+                     Passphrase for a encryption item. Insert obvious security
+                     warning about saving passphrases in files here."
+
+    preset          "PRESETNAME
+                     Use a preset value for the given type. For example, the
+                     preset 'boot' for a partition will set the type code,
+                     mountpoint, and size to specific values."
+
+    size            "SIZE
+                     Size of a partition. May be specified in either sgdisk
+                     friendly absolute size format using the following
+                     suffixes: kibibytes (K), mebibytes (M), gibibytes (G),
+                     tebibytes (T), or pebibytes (P), or may be a percentage
+                     value which will use the specified percent of the
+                     *available* space on the drive (excluding any partitions
+                     preserved using --noclobber) such as '30%'. You may also
+                     enter 'max' as a value to use the maximum available
+                     (remaining) free space after all other partitions have
+                     been assigned. Using the value 'ram' will similarly set
+                     the partition size to match the install system memory,
+                     useful for partitions that contain swap devices. Note
+                     that if a partition does contain a swap device without
+                     a size value assigned to either, a size of 'ram' will be
+                     assigned by default."
+
+    )
+
+#    type            "TYPE
+#                     Any of the valid storage device types. Unlike the other
+#                     options in the fields list, this is *not* specified with
+#                     an extended option style '--' prefix. Rather each line
+#                     starts with the type word. Valid types: ${(@)VALUES[type]}"
+
+    # fields that are valid for use. not all valid for all storage types.
+    FIELDS[boolean]=${(k)ITEMOPTIONS_BOOL}
+    FIELDS[scalar]="${(k)ITEMOPTIONS_SCAL}"
+
+    # partition GUID global type code lookup table
+    # (translate from sgdisk two byte codes to full GUID)
+    # this is not exhaustive
+    # cf http://sourceforge.net/p/gptfdisk/code/ci/master/tree/parttypes.cc
+    # cf http://www.freedesktop.org/wiki/Specifications/DiscoverablePartitionsSpec/
+    # cf http://www.freedesktop.org/software/systemd/man/systemd-gpt-auto-generator.html
+    # cf http://en.wikipedia.org/wiki/GUID_Partition_Table
+    # cf http://www.sepago.de/e/nicholas/2012/07/25/windows-recovery-environment-re-explained
+    # cf http://technet.microsoft.com/en-us/library/dd744301(v=ws.10).aspx
+
+    CODES=(
+    0100,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-12"
+    0400,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16 < 32M"
+    0600,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16"
+    0700,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - NTFS (or HPFS)"
+    0b00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-32"
+    0c00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-32 LBA"
+    0c01,E3C9E316-0B5C-4DB8-817D-F92DF00215AE "Microsoft reserved"
+    0e00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16 LBA"
+    1100,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-12"
+    1400,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16 < 32M"
+    1600,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16"
+    1700,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden NTFS (or HPFS)"
+    1b00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-32"
+    1c00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-32 LBA"
+    1e00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16 LBA"
+    2700,DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "Windows RE"
+    8200,0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "Linux swap"
+    8300,0FC63DAF-8483-4772-8E79-3D69D8477DE4 "Linux filesystem"
+    8301,8DA63339-0007-60C0-C436-083AC8230908 "Linux reserved"
+    8302,933AC7E1-2EB4-4F13-B844-0E14E2AEF915 "Linux /home"
+    8303,44479540-F297-41B2-9AF7-D131D5F0458A "Linux x86 root (/)"
+    8304,4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709 "Linux x86-64 root (/)"
+    8305,B921B045-1DF0-41C3-AF44-4C6F280D3FAE "Linux ARM64 root (/)"
+    8306,3B8F8425-20E0-4F3B-907F-1A25A76F98E8 "Linux /srv"
+    8e00,E6D6D379-F507-44C2-A23C-238F2A3DF928 "Linux LVM"
+    ab00,426F6F74-0000-11AA-AA11-00306543ECAC "Apple boot"
+    af00,48465300-0000-11AA-AA11-00306543ECAC "Apple HFS/HFS+"
+    af01,52414944-0000-11AA-AA11-00306543ECAC "Apple RAID"
+    af02,52414944-5F4F-11AA-AA11-00306543ECAC "Apple RAID offline"
+    af03,4C616265-6C00-11AA-AA11-00306543ECAC "Apple label"
+    af04,5265636F-7665-11AA-AA11-00306543ECAC "AppleTV recovery"
+    af05,53746F72-6167-11AA-AA11-00306543ECAC "Apple Core Storage"
+    ea00,BC13C2FF-59E6-4262-A352-B275FD6F7172 "Freedesktop BOOT"
+    ed00,F4019732-066E-4E12-8273-346C5641494F "Sony system partition"
+    ed01,BFBFAFE7-A34F-448A-9A5B-6213EB736C22 "Lenovo system partition"
+    ef00,C12A7328-F81F-11D2-BA4B-00A0C93EC93B "EFI System"
+    ef01,024DEE41-33E7-11D3-9D69-0008C781F39F "MBR partition scheme"
+    ef02,21686148-6449-6E6F-744E-656564454649 "BIOS boot partition"
+    fd00,A19D880F-05FC-4D3B-A006-743F0F84911E "Linux RAID"
+    )
+
+    # generate short and long code lookup/reverse lookups
+    CODES+=(
+    ${(k)=CODES//,/ }
+    ${(k)=CODES//(#b)(#s)(*),(*)(#e)/$match[2] $match[1]}
+    )
+    
+}
+__captureEnvironment () {
+    # creates an array with keys formatted similarly to:
+    # output_array[/dev/sda1,mountpoint]
+    . <(localopts ignore_env: output_array: debug_file:)
+
+    ${(P)ignore_env:-false} && return 0
+
+    typeset -Ag $output_array
+    typeset -A STAGING
+    typeset -T lsblk_fields_list lsblk_fields ','
+    lsblk_fields=(
+        LABEL
+        MODEL
+        MOUNTPOINT
+        NAME
+        PARTLABEL
+        RM
+        RO
+        SIZE
+        TYPE
+        UUID
+        VENDOR
+        )
+    for line in ${"${(@f)$(lsblk -Pp -o $lsblk_fields_list)}"}
+    do
+        STAGING=(${(0)line//(#m)[[:WORD:]]##=/${(#):-0}${MATCH%=}${(#):-0}})
+        typeset devname=${(Q)STAGING[NAME]%% #}
+        unset "STAGING[NAME]"
+        typeset key="" value=""
+        for key in ${(k)STAGING}
+        do
+            if [[ -n ${${value::=${(Q)STAGING[$key]%% #}}%0} ]]
+            then
+                eval $output_array'[$devname,${(L)key}]=$value'
+            fi
+        done
+    done
+
+    # get existing partition codes
+    if [[ $USERNAME == root ]]
+    then
+
+        # list of available partitions on system
+        # (first set all_types, then pull out the partitions)
+        typeset -A all_types 
+        : ${(AA)all_types::=${(Pkv)${:-${output_array}[(I)*type]}}}
+        typeset -a all_partitions
+        all_partitions=(${(k)all_types[(R)part]%,type})
+
+        typeset longcode short_code
+        for partition in $all_partitions
+        do
+            # if sgdisk chokes on the disk, skip it
+            if sgdisk ${partition%%[0-9]#} &>/dev/null
+            then
+                longcode=${${:-"$(sgdisk -i${(M)partition%%[0-9]#} ${partition%%[0-9]#})"}//(#b)*GUID code: ([^[:space:]]##)*/$match}
+                eval $output_array'[$partition,longcode]=${(u)longcode}'
+                [[ -n ${shortcode::=${CODES[$longcode]:-}} ]] && \
+                    eval $output_array'[$partition,shortcode]=${(u)shortcode}'
+            fi
+        done
+    else
+        warn "Skipping partition code inferrence as script is not being run as root.
+              If run as root, $SCRIPTNAME will use sgdisk to infer --noclobber
+              partition matches based on codes if present. This is non-critical."
+    fi
+
+    debugCapture BLOCKENV
+}
+__fileLocate () {
+
+    # takes a filename, relative path, absolute path, or url, returns a local,
+    # absolute file path (either discovered or downloaded) with an exit code
+    # of 1 for failure. the zsh sublist below first checks for a remote file
+    # and downloads it if that is the  case, then tries to just source the
+    # file as give (so either in the PWD or an absolute path or a valid
+    # relative path), and if that fails, it then looks in the scriptroot and
+    # recursive subdirectories for a match, finally returning an exit code 1
+    # if it fails.
+
+    . <(localopts input_filepath: output_filepath: tmpdir: root: debugmode:)
+
+    typeset -a r s
+
+    # if no file has been supplied
+    if [[ -z ${(P)input_filepath:-} ]]
+    then
+        # if we are in debug output mode then dump environment
+        if ${(P)debugmode:-false}
+        then
+            alert "No input file supplied, saving system environment only due
+            to --debug mode being set." 1>&2
+            exit 0
+        # otherwise show minimal usage
+        else
+            __usage --minimal
+            alert "Storage definition filename, path or URL required.
+                        See the ${SCRIPTROOT}/storage-patterns subdirectory."
+            exit 0
+        fi
+    elif [[ ${(P)input_filepath} =~ "(http|ftp)s?:.*" ]]
+    then
+         curl -sL "$input_filepath" \
+              -o ${res::=${tmpdir%/}/${input_filepath:t}} || res=""
+    elif [[ ! -f "${res::=${(P)input_filepath:a}}" ]]
+    then
+         [[ -f "${res::=${r[${s[(i)${${(o@)${(@A)s::=${(@)${(fA)r::=$(\
+             print -l \
+             ${(P)root}/***/${(P)input_filepath}(.onOd:A))}//[^\/]/}}}[1]}]:-}]:-}}" ]]\
+             || res=""
+    fi
+    # at this point will have a result if we were able
+    # otherwise fail
+    if [[ -n "$res" ]]; then
+        eval typeset -g $output_filepath="$res"
+        report "Using source file $res"
+    else
+        fail "Failed to locate file ${(P)input_filepath}"
+    fi
+}
+__fileRead () {
+    . <(localopts filepath: output_array: )
+    typeset -ag $output_array
+    eval $output_array'=("${(@f)$(< ${(P)filepath})}")'
+    debugCapture $output_array
+}
+__fileClean () {
+    # convert storage definition file from supplied format to one ready for
+    # further conversion to array of records. removes all comments, merges
+    # escaped newlines, etc. converts types (drive, partition to optargs,
+    # records indentation level for later processing.
+    . <(localopts file_raw_array: output_array: )
+
+    # note that without the noted comment strip :# removal below,
+    # we have a problem with files that have trailing comments
+    typeset -a e
+    typeset counter=${(#):-29}
+    e=(
+    ': '
+    '${(AP)output_array::='
+    '${'
+    '${'
+    '${'
+    '${'
+    '${(s:; :j: :)'
+    '${'
+    '${(@Z+C+)'
+    '${(F)'
+    '${'$file_raw_array':#[[:blank:]]#\#*}' '# added a comment strip here'
+    '#${'$file_raw_array'}'                 '# original'
+    '//(#b)'
+    '(#s)'
+    '( #)'
+    '/${(l.${#match[1]}..'$counter'.):-}'
+    '}}}}'
+    '//(#b)'
+    '(#s)'
+    '('$counter'#)'
+    '(*)'
+    '/'
+    '${match[2]} '
+    '--indent '
+    '${#match[1]}}'
+    '//'$counter'/}'
+    '//(#s)'
+    '\#*(#e)/}'
+    '//(#s)'
+    '/--type }}'
+    )
+    eval ${(j..)e:#\#*}
+}
+__fileConvertToArray () {
+    . <(localopts \
+            input_array:    \
+            output_array:   \
+            fields_array:   \
+            previous_index: \
+            previous_indent:)
+
+    typeset -Ag $output_array
+
+    # write staging array if this is our first call to the function
+    # (treat input as immutable)
+    if ! (( ${+previous_index} )); then
+        unset STAGING # in case used in other functions clean up if they didn't
+        typeset -ag STAGING
+        eval 'STAGING=("${(@)'$input_array'}")'
+        input_array=STAGING
+    fi
+
+    typeset -a bool; bool=(${(P)=${:-${fields_array}[boolean]}})
+    typeset -a scal; scal=(${(P)=${:-${fields_array}[scalar]}})
+    typeset -a opts; opts=(${bool} ${scal})
+
+    typeset index
+    typeset -i sibling_index
+
+    while ${${(P)input_array:+true}:-false}; do # process array line by line
+
+        eval set -- ${(P)${input_array}[1]};
+        . <(localopts ${bool} ${^scal}: indent: type:)
+
+        #typeset leftovers
+        #leftovers="${*:-NULL}"
+
+        if (( $indent > ${previous_indent:=$indent} )); then # child, recurse
+
+            $0 --input_array $input_array \
+                --output_array $output_array \
+                --fields_array $fields_array \
+                --previous_index $index \
+                --previous_indent $indent
+            
+        elif (( $indent == $previous_indent )); then # valid sibling; process
+
+            # generate index path (e.g. 1,2,1) for array subscript
+            index=${previous_index:-}${previous_index:+,}$((++sibling_index))
+
+            # warn if anything is left over, but don't fail
+            if [[ -n ${leftovers:-} ]]; then
+
+                alert "Unknown option/argument values for item type '$type'
+                      encountered while reading storage definition file:
+                      ${leftovers} This is non-critical."
+
+                # If the beginning of the leftovers match an option name
+                # suggest that the user forgot the -- prefix
+                if [[ "${leftovers:-}" =~ (^(${(j:|:)~opts}).*) ]]; then
+                    alert "Did you forget the -- prefix to specify the option
+                        name?\nIf so, try changing it to: --$*\n" 1>&2
+                fi
+
+            fi
+
+            # TODO: re-set optargs and process them here, since
+            # we are scraping the o value output of localopts, a
+            # really bad way to do this. better to iterate over opts
+            eval set -- ${(P)${input_array}[1]};
+            . <(localopts ${bool} ${^scal}: indent: type:)
+            typeset leftovers="${@:-}"
+            # assign values to storage array (this assigns all of them)
+            params='${=${:-${(@)^${(@M)${(@k)o##-#}//(#m)(*)/${output_array}'
+            params+='[${index}${index:+,}${MATCH}]${MATCH:+=}${(q)o[--'
+            params+='${MATCH}]#=}}};}//typesetNULL/typeset }' 
+
+            eval ${(e)params}
+
+            # strip indent values (could be in a pattern above as well)
+            # to normalize test output (indent value compute may change)
+            eval 'unset "${:-${output_array}[$index,indent]}"'
+
+            # remove first item in array since we have assigned it to
+            # output_array
+            eval $input_array'[1]=()';
+
+        else # return from recursion or function
+            return 0
+        fi
+    done
+
+    # remove unrequired indent values
+    # (this doesn't need to be eval'd but it was screwing up syntax
+    # highlighting otherwise... TODO
+
+}
 __inflateStructure () {
     . <(localopts           \
         storage_array:      \
@@ -653,1362 +1937,76 @@ __inflateStructure () {
     }
     while ! inflateLoop; do :; done
 }
-__assumeValues () {
-    . <(localopts \
-        storage_array: \
-        fields_array: \
-        inherit_array: \
-        valid_array: \
-        infer_off_option:
-        )
-
-    ${(P)infer_off_option:-false} && return 0
-
-    assumeTypeSpecificValues () {
-        . <(localopts start_at:)
-        typeset -a children
-        children=($(getChildren ${start_at:-}))
-        typeset index
-        for index in $children
-        do
-            makeActive $index
-            assumeFilesystemValues --storage_array $storage_array   || return 1
-            assumePartitionValues  --storage_array $storage_array   || return 1
-            $0 --start_at $index    || return 1
-        done
-    }
-
-    while ! assumeTypeSpecificValues; do :; done
-}
-assumeFilesystemValues () {
-    . <(localopts storage_array:)
-    if [[ ${ACTIVE[type]:-} == filesystem ]]
-    then
-
-        typeset field amatch
-
-        # missing mountpoint, fstype, from parent or ancestor
-        for field in mountpoint fstype
-        do
-            if [[ -z ${ACTIVE[$field]:-} ]]
-            then
-                if [[ -n ${PARENT[$field]:-} ]] && false
-                then
-                    setActive $field ${PARENT[$field]}
-
-                    noteByIndex \
-                        --array $storage_array \
-                        --index $ACTIVE[index] \
-                        --note "Moved $field field from ${PARENT[type]} parent"
-
-                    unset "${storage_array}[$PARENT[index],$field]"
-                    return 1
-                elif [[ -n ${amatch::=$(ancestorGetMatch $field)} ]]
-                then
-                    setActive $field ${(P)${:-${storage_array}[$amatch]}}
-                    atype=${(P)${:-${storage_array}[${amatch%$field}type]}}
-
-                    noteByIndex \
-                        --array $storage_array \
-                        --index $ACTIVE[index] \
-                        --note "Moved $field field from $atype ancestor"
-
-                    unset "${storage_array}[$amatch]"
-                    return 1
-                fi
-            fi
-        done
-
-        # missing fstype, infer from child
-        if [[ -z ${ACTIVE[fstype]:-} \
-           && ${(P)${:-${storage_array}[${ACTIVE[index]},1,type]}:-} \
-           == subvolume ]]
-        then
-            eval $storage_array'[$ACTIVE[index],fstype]=btrfs'
-            setActive fstype btrfs
-            noteByIndex \
-                --array $storage_array \
-                --index $ACTIVE[index] \
-                --note "Set fstype to btrfs due to subvolume child"
-            return 1
-        fi
-
-        # missing fstype, set default value
-        if [[ -z ${ACTIVE[fstype]:-} ]]
-        then
-            setActive fstype ext4
-            noteByIndex \
-                --array $storage_array \
-                --index $ACTIVE[index] \
-                --note "Set fstype to ext4 as default value for missing fstype field"
-            return 1
-        fi
-    fi
-    
-}
-assumePartitionValues () {
-    . <(localopts storage_array:)
-    if [[ ${ACTIVE[type]:-} == partition ]]
-    then
-        # missing size and is NOT noclobber
-        if [[ -z ${ACTIVE[size]:-} ]] && ${${ACTIVE[noclobber]+false}-true}
-        then
-
-            typeset dsizekey dsize dtype
-            typeset -a sibs
-
-            # check for swap descendant for use below
-            typeset -A types
-            : ${(AA)sizes::=${(Pkv)${:-${storage_array}[(I)${ACTIVE[index]},[0-9]##,type]}}}
-            typeset swap_descendant=${(k)sizes[(r)swap]%,type}
-
-            # try to get first available size from any descendant
-            dsizekey=${(Pk)${:-${storage_array}[(i)${ACTIVE[index]},*,size]}:-}
-            dsize=${(Pv)${:-${storage_array}[$dsizekey]}:-}
-            dtype=${(Pv)${:-${storage_array}[${dsizekey%%size}type]}:-}
-            if [[ -n ${dsize:-} ]]
-            then
-                setActive size $dsize
-                unsetActive warn
-                noteByIndex \
-                    --array $storage_array \
-                    --index $ACTIVE[index] \
-                    --note "Claimed size from ${dtype:-} descendant"
-                unset "${storage_array}[$dsizekey]"
-                return 1
-
-            # if there is a swap descendant, it lacks a size
-            # so we infer system ram size
-            elif [[ -n ${swap_descendant} ]]
-            then
-                setActive size ram
-                unsetActive warn
-                noteByIndex \
-                    --array $storage_array \
-                    --index $ACTIVE[index] \
-                    --note "Set missing size to match system ram due to swap
-                            descendant"
-                return 1
-
-            # else count other siblings, if we're alone then max
-            # (swap check must be before this)
-            elif [[ -z ${(A)sibs::=$(getOtherSiblings)} ]]
-            then
-
-                setActive size max
-                unsetActive warn
-                noteByIndex \
-                    --array $storage_array \
-                    --index $ACTIVE[index] \
-                    --note "Set paritition size to be maximum available free
-                            space as it is the only partition listed"
-                return 1
-
-            # check for conditition of all existing peers
-            else
-
-                typeset sib all_sibs_pass=true
-
-                # a noclobber sibling is assumed to have a size
-                # (we don't need to know it since we won't be
-                # creating the partition), so we check here for
-                # either noclobber or size. if all other partitions
-                # have at least one of these values then we can
-                # safely assume this single partition that is
-                # missing a value is a max size partition
-                for sib in $sibs
-                do
-                    # TODO: if I change noclobber checks to
-                    # be a function rather than preset parameter
-                    # lookup, then this will also change
-                    if ( ! isSet "${storage_array}[$sib,noclobber]" ) || 
-                       ( ! isSet "${storage_array}[$sib,size]" )
-                    then
-                    else
-                        # sibling item without noclobber or size found
-                        all_sibs_pass=false
-                        break
-                    fi
-                done
-
-                if $all_sibs_pass
-                then
-                    setActive size max
-                    unsetActive warn
-                    noteByIndex \
-                        --array $storage_array \
-                        --index $ACTIVE[index] \
-                        --note "Set partition size to use maximum available
-                                space on drive as all other partitions are
-                                either either fixed size or are noclobber"
-                    return 1
-                fi
-
-                # any other future all-sibling checks go here
-
-                # we drop out of this loop here with an implicit
-                # return 0 as we've now done our best to infer
-                # partition values
-                warn "Unable to infer a size value for partition $record"
-
-            fi
-
-        fi
-    fi
-}
-
-:<< \
-------------------------------------------------------------------------------
-END MAIN EXECUTION
-
-everything ABOVE comprises main script sequence, everything BELOW is processed
-prior to the __MAIN function (so all functions below are defined *prior* to
-__MAIN execution. This includes the script environment section immediately
-following this, which is within the same scope as the preload.
-------------------------------------------------------------------------------
-
-:<< \
-------------------------------------------------------------------------------
-SCRIPT ENVIRONMENT & DEFAULT VALUES
-
-this is the only section within same scope as the preload, everything else
-should be a function
-------------------------------------------------------------------------------
-
-setopt ERR_RETURN ERR_EXIT NO_UNSET GLOBAL_EXPORT EXTENDED_GLOB NULL_GLOB \
-       DEBUG_BEFORE_CMD TYPESET_SILENT #WARN_CREATE_GLOBAL
-       #TODO - clean up script using WARN_CREATE_GLOBAL
-
-zmodload zsh/regex zsh/zutil
-
-SCRIPTNAME="${${SCRIPTPATH:=$(readlink -f $0)}:t}"
-SCRIPTROOT="${SCRIPTPATH:h}"
-SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
-
-TRAPEXIT () { (( $status > 0 )) && DEBUG=true; trapcleanup; }
-TRAPZERR () {
-    teelog --category UNHANDLED_ERROR --color red "$(print -l -- ${ROLLING:-})"
-    DEBUG=true; trapcleanup
-    print "\n${COLOR[red]:-}Exit due to unhandled error." 1>&2; }
-trapcleanup  () {
-    [[ -z ${ROLLCALL:-} ]] || print -l -- "# "${^ROLLCALL} >> $DEBUGLOG
-    reportLog >> $DEBUGLOG
-    ${DEBUG:-false} && { mv $DEBUGLOG $DEBUGLOG_SAVE;
-    print "\n${COLOR[red]:-}Debug log saved to $DEBUGLOG_SAVE" 1>&2; } || :
-    [[ -d "${SCRIPTTEMP:-}" ]] && rm -rf "$SCRIPTTEMP"; }
-
-# Command line options
+#__inferMissingElements () {
+#    . <(localopts \
+#        input_array: \
+#        fields_array: \
+#        inherit_array: \
+#        valid_array: \
+#        infer_off_option:
+#        )
 #
-# The OPTS_* arrays below determine the actual processed options as well
-# as the help output. Each UPPERCASEOPTION is converted to a --lowercase
-# the command line value of which is assigned to the UPPERCASE parameter
-# name. Standard OPTS_* items are also set with a single letter short
-# form in lowercase (e.g. -l) unless they are in the *_ALT arrays, which
-# are set using uppercase short form (e.g. -U). *_ALT arrays contain
-# alternate options that are uppercased as single letter options (long
-# options remain lowercase as they are, or should be, unique).
+#    ${(P)infer_off_option:-false} && return 0
 #
-# --help and --usage display the short and long options computed from the
-# arrays below. any *_ARG_* values (options with an argument) will output
-# with the first line of the description as the argument placeholder.
-# --help displays a brief version of each description consisting of the
-# first line only of item.
-
-typeset -Ag OPTS_BOOL OPTS_BOOL_ALT OPTS_ARGS OPTS_ARGS_ALT OPTS_ARGS_HIDDEN
-
-OPTS_BOOL=(
-
-HELP        "Show this help information.
-             Use --usage for expanded help."
-
-NOQUERY     "No queries, make best guesses.
-             Don't ask for any user input. Pick first obvious choices for the
-             user, for example use first available drives (internal or as
-             provided by the --drives option), automatically match partitions
-             when there is only one existing partition that matches the values,
-             etc. Best to run without this option first to see what happens."
-
-IGNORE      "Ignore live system environment.
-             Disregards the current systems drive and partition environment.
-             Allows script to create output based on *only* the provded
-             template. Drives must either be set in the drive entries in the
-             template or using the --drives option. This allows creation of
-             scripts that don't match the current system configuration.
-             This is different from full environment simulation with the
-             --debug and --debugsource options."
-
-KEEP        "Keep all existing partitions.
-             Same as setting the --keep option on each drive. Prevents
-             existing partitions from being affected."
-
-MINIFY      "No comments in the final script.
-             Turns off all comments and blank lines in the script output.
-             Removing these does not change the functionality of the final
-             script."
-
-QUIET       "No messages or warnings.
-             Only display actual script (or tree) output, skip informational
-             messages (the informational messages will still be output in the
-             script itself unless the --commentsoff option is selected. With
-             this option, a single error message will be output to standard
-             error if the script fails."
-
-SCRIPT      "Always display script output.
-             This happens by default UNLESS either the --tree or --output
-             options have been passed on the command line. In these cases,
-             passing the --script option restores the visual output of the
-             script as well."
-
-TREE        "Print tree diagram of output.
-             After evaluating the storage template, a tree relationship is
-             displayed with colors indicating key values (unless --nocolors
-             has been used). Useful in combination with the something like
-             \`watch -cn1\'. This option precludes final script output unless
-             either the --script or --output options have also been provided."
-
-NOQUERY     "Skip all interactive queries.
-             Normal script execution results in queries for drive and
-             partition selection if those values have not been provided and
-             cannot be inferred otherwise. This skips those queries. Use this
-             with the --yes option to answer all yes/no queries with a default
-             value."
-
-FSTAB       "(not yet implemented)"
-
-USAGE       "Displays detail usage information.
-             Adds a summary of the types of options and arguments that are valid
-             for each storage type entry. Redirect to a file or pipe through a
-             pager such as less. See also the $SCRIPTNAME README available in
-             the project git repository."
-
-)
-OPTS_ARGS=(
-
-DRIVES      "'/dev/sdX,/dev/sdY'
-             List of drive paths to use in output.
-             Force the use of drives from a comma separated list, for
-             example: --drives '/dev/sda' or --drives '/dev/sda,/dev/sdc'.
-             Drives will be assigned to missing devpath values in storage
-             definition file using these values, in order. If used in
-             combination with the --ignore option, then the drives listed
-             do not need to exist on the current system. If the --drives
-             option is used without the --ignore option, then the current
-             system is checked for the presence of these drives first."
-
-ROOTMOUNT   "'/MOUNT/ROOT/PATH'
-             Preinstall mountpoint root path.
-             Set mount root directory (if not set, use the default '/mnt').
-             Argument is a valid, absolute path to an existing directory.
-             This path is used during system installation as a chroot  and
-             is *not* recorded in any fstab."
-
-OUTPUT      "OUTPUT_FILE_NAME
-             Optional output filename.
-             If this option is provided, the final executable script will be
-             written to the path provided. If not set, script is displayed on
-             standard output and may be saved using redirection."
-
-)
-OPTS_BOOL_ALT=(
-
-DEBUG       "Turn on debug tracking & always save debug log.
-             This option turns on minimal debug tracking and rolling script
-             trace capture (in case of error). This has a minimal performance
-             impact so is normally off. The debug log is saved by by default
-             if the script encounters an error, and the debug file path will be
-             displayed in that case or with the use of this option. This debug
-             file contains the block device configuration and the original
-             template file content. It may be submitted with bug reports."
-
-README      "Output usage in README markdown format."
-
-COLOROFF    "Do not use colors in console output."
-
-INFEROFF    "Turn off inference of items (drives, partitions, defaults)."
-
-NOMATCH     "Turn off match attempts for noclobber partitions. Normally, if a
-             the --noclobber option has been specified (or inherited) by a
-             partition entry in the storage template (or a partition implied
-             by another entry), $SCRIPTNAME will make best effort to match it
-             to an existing partition based on available information in the
-             template and on the system itself. See the --usage section on
-             matching for more information."
-
-MULTIPASS   "Output individual passphrase query blocks.
-             If multiple encryption items exist $SCRIPTNAME normally creates a
-             single passphrase query in the final executable script. With this
-             option, each encryption device without a preset passphrase will
-             receive a separate passphrase query step in the final script.
-             Yes, it's a multipass,"
-
-VALUESDUMP  "Dump environment values in human readable format for debugging."
-
-WARNOFF     "Turn off warning query in script output."
-
-)
-OPTS_ARGS_ALT=(
-
-SOURCEDEBUG "FILENAME
-             Simulate environment from debug file.
-             $SCRIPTNAME will read the captured debug output from the provided
-             file and use it to simulate a system environment. Simulated values
-             include the block device configuration and the original template
-             file content."
-
-TEMPLATE    "TEMPLATE_FILE_PATH
-             Alternative syntax for source template.
-             $SCRIPTNAME normally uses arg 1 (the first 'unnamed' argument) on
-             the command line as the name (or path) of the template to use.
-             This option is merely a more explicit alternative to that."
-
-)
-
-:<< \
-------------------------------------------------------------------------------
-Main Sequence Functions
-------------------------------------------------------------------------------
-__processScriptOptions () {
-
-    typeset command_line="$SCRIPTNAME $*"
-
-    # run zparseopts on all defined script options
-    eval zparseopts -D -E -- \
-    ${(k)OPTS_BOOL//(#b)(*)/${${(L)=match}:0:1}=$match -${(L)match}=$match} \
-    ${(k)OPTS_BOOL_ALT//(#b)(*)/${${(U)=match}:0:1}=$match -${(L)match}=$match} \
-    ${(k)OPTS_ARGS//(#b)(*)/${${(L)=match}:0:1}:=$match -${(L)match}:=$match} \
-    ${(k)OPTS_ARGS_ALT//(#b)(*)/${${(U)=match}:0:1}:=$match -${(L)match}:=$match}
-
-    # clean up the parsed options and assign to variables matching their names
-    # (so that TESTMODE, for example. receives a true/false value, DRIVES
-    # receives and array value, etc.)
-    eval typeset -g \
-    ${(k)OPTS_BOOL//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-false}} \
-    ${(k)OPTS_BOOL_ALT//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-false}}
-    eval typeset -ag ${(k)OPTS_ARGS}
-    eval ${(k)OPTS_ARGS//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
-    eval ${(k)OPTS_ARGS_ALT//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
-
-    # the input file can be set by --input or arg 1
-    typeset -g INPUTFILE=${INPUT:-${1:-}}
-
-    # initializeScriptParameters
-    # Make sure we have user specified or default mountroot directory
-    typeset m="${MOUNTROOT:-}"
-    # we're going to either assign or reassign as a scalar and it comes
-    # in as an array from our options processing
-    # so unset first, then assign existing or default value
-    # TODO: this could be a one liner if I unset inside an assignment
-    # or possibly if I force set?
-    unset MOUNTROOT; typeset -g MOUNTROOT="${m:-/mnt}"
-    [[ ${MOUNTROOT} =~ "/" ]] || MOUNTROOT="${$(pwd)%/}/${MOUNTROOT}"
-    [[ -d ${MOUNTROOT} ]] || {
-        __usage
-        fail "ERROR: Mountroot directory $MOUNTROOT not found."
-        }
-
-    # Convert DRIVES values from csv
-    [[ -n ${DRIVES:-} ]] && { DRIVES=(${=${(s:,:)DRIVES}}) }
-
-    if ! ${COLOROFF:-false}; then
-        typeset -Ag COLOR COLOR
-        autoload colors; colors
-        for color in ${(k)fg_no_bold}; do
-            COLOR[$color]=${fg_no_bold[$color]}
-            COLOR[$color,bold]=${fg_bold[$color]}
-        done
-    else
-        unset COLOR
-    fi
-
-    # debug log and a path to move it to if script fails
-    # (so don't make user re run with --debug on a bad error)
-    # DLHOST=${SCRIPTNAME}${${(%)${:-%D}}//-/}.debug
-    # DLTIME=${SCRIPTNAME}${HOST:+-}${HOST:-}.debug
-    typeset -g DEBUGLOG_BASE=${SCRIPTNAME}.debug
-    typeset -g DEBUGLOG_SAVE=/tmp/$DEBUGLOG_BASE
-    typeset -g DEBUGLOG=$SCRIPTTEMP/$DEBUGLOG_BASE
-    if [[ -e $DEBUGLOG_SAVE ]]
-    then
-        rm -f $DEBUGLOG_SAVE || \
-        fail "Cannot remove existing debug log at $DEBUGLOG_SAVE"
-    fi
-    # prep debug log header
-    typeset -a debug_log_header
-    debug_log_header=(
-    "# ${(U)SCRIPTNAME} DEBUG LOG"
-    "# DATE:         $(date)"
-    "# RUN AS:       ${${(M)USERNAME:#root}:-non-root}"
-    "# ZSH VERSION:  $ZSH_VERSION"
-    "# COMMAND LINE: $command_line"
-    "# SUBMIT TO:    $SCRIPTNAME@ethanschoonover.com\n"
-    "typeset -gA BLOCKENV"
-    "typeset -ga FILERAW"
-    )
-    print -l -- $debug_log_header > $DEBUGLOG
-
-    ${DEBUG:-false} && {
-    print "ROLLING TRACKING ON"
-        typeset -ag ROLLING
-        TRAPDEBUG () {
-            for i in {1..4}
-            do
-                ROLLING[$i]=${ROLLING[$((i+1))]:-}
-            done
-            ROLLING[5]=$ZSH_DEBUG_CMD;
-        }
-    } || {
-    track () { eval $@ }
-    }
-
-}
-__initializeRulesets () {
-
-    typeset -Ag FIELDS VALID VALUES CHILDREN SIBLINGS OPTIONS REQUIRED \
-        ITEMOPTIONS_BOOL ITEMOPTIONS_SCAL DESCRIPTION PRESET CODES INHERIT \
-        CONFLICTS EQUIVALENTS ANCESTORS DESCENDANTS
-
-    # the types of storage devices we know about
-    # ORDER IS IMPORTANT. Items to the left are *potential* ancestors of items
-    # to the right
-    VALUES[type]="drive partition logical encryption swap filesystem subvolume"
-
-    # known fstypes and short GUID codes TODO: replace the code list
-    # with the fixed list below, which includes translation to long codes
-    VALUES[fstype]=${${=${listing::=$(print ${:-=mkfs}.*)}}##$(print =mkfs).}
-    VALUES[code]=${(uM)${:-$(sgdisk -L)}:#([0-9]|[a-f])(#c4)}
-    print "\n# fstypes present via mkfs: ${(@)VALUES[fstype]}" >> $DEBUGLOG
-
-    # the fields which are valid for each storage item type
-    # with 'common' fields being valid for all types
-    # these are checked AFTER inheritance and conversions for final
-    # validity, and are use DURING inheritance to determine which
-    # type inherits which fields
-    VALID=(
-    common      "notes auto"
-    drive       "device ssd"
-    encryption  "luksformat luksopen pass label encrypt"
-    filesystem  "fstype mountpoint label"
-    logical     ""
-    partition   "bootable code size partnum new keep replace label"
-    subvolume   "mountpoint"
-    swap        "label"
-    )
-
-#    conversions:
-#    drive: label -> partlabel
-#    swap: label -> swaplabel+partlabel
-#    part: label -> partlabel
-#    enc:  label -> lukslabel
-#    fs:   label -> lukslabel
-#    subvolume: label -> fslabel
-
-#OR just leave them as is, make parents and move them if necessary, just being
-#sure to work from inside out for labels
-
-#    any -> device to split device and partnum
+#    # nonzero exit status breaks us out of the loops until
+#    # all inferences pass without making changes.
+#    # this is not the optimal solution as race conditions
+#    # can occur if the tests were to revert previous changes,
+#    # but it's ok for now...
 #
-#    code to -> longcode or shortcode?
-
-#   IF these are all unique, then the presence of any item on a
-#   child or parent could imply the presence of the inverse (parent or child)
-#   TRUE?
-#   e.g. a filesystem with a code clearly implies a partition
-#   similarly a filesystem with a passphrase implies encryption
-#   thus the imply step is simplified to:
-#       if there are any invalid fields, make the parent of this item
-#       for which they are valid (regardless of whether the parent is
-#       a valid parent or child of existing parent...). if we do this
-#       from outer potential to inner potential, we create a correct
-#       nest. i.e. a swap with a partnum AND pass value creates a partition
-#       then encryption. It is important that somewhere we have an ordered
-#       list of outer to inner.
-#       (the VALUES[type] list is now correct)
-#   generation:
-#   encrypt -> encryption parent
-#   lukslabel: luks parent
-#   partlabel: part parent
-#   partnum: part parent
-
-# OR better... during the inheritance, if field is ALSO valid for the source
-# record then just... copy it? maybe with some translation or suffix rule?
-
-# for example, what happens when subvolume has a label? it should go up to filesystem parent
-
-# what happens when a drive has a label? does it imply anything? a partition, probably.
-
-# in the case of keep or replace partitions, some data will come from the
-# existing partition, at least for keep partitions we can get the partition
-# label, and maybe the filesystem label?
-    
-    # the fields which are required for each storage item type
-    # some of these will either be inferred or set as defaults,
-    # but this list is used for validity check
-    REQUIRED=(
-    common      ""
-    drive       ""
-    encryption  ""
-    filesystem  "fstype"
-    logical     ""
-    partition   "size"
-    subvolume   ""
-    swap        ""
-    )
-
-    # migrated these to logic, may need to move them back here TODO
-    DEFAULTS=(
-    common      ""
-    drive       ""
-    encryption  ""
-    filesystem  ""
-    logical     ""
-    partition   ""
-    subvolume   ""
-    swap        ""
-    )
-
-    # Inheritable values
-    # inheritance retains the value on the source record (if it is valid)
-    # else it claims it from the source. this is only attempted if the
-    # field is valid for the record in question.
-    INHERIT=(
-    up          "ssd bootable replace keep"
-    down        "ssd keep"
-    any         "device partnum fstype size mountpoint code devpath"
-    )
-
-    # values that are invalid on the same entry
-    CONFLICTS=(
-    keep        "replace"
-    )
-
-#    # when analyzing descendants and ancestors, make the following
-#    # peers (i.e. a swap cannot have a filesystem or subvolume as
-#    # a descendant, a filesystem cannot have a swap as a descendant)
-#    # 
-#    # could remove this check here by building up a list of ancestors
-#    # and descendants using the CHILDREN array (probably a better
-#    # method, long term, since the changes are only made in one place)
-#    # TODO
-#    EQUIVALENTS=(
-#    swap        "filesystem subvolume"
-#    filesystem  "swap"
-#    )
-
-    # the valid child device types for a given device type
-    CHILDREN=(
-    drive       "partition filesystem"
-    encryption  "filesystem swap"
-    filesystem  "subvolume"
-    logical     ""
-    partition   "encryption filesystem swap"
-    subvolume   "subvolume"
-    swap        ""
-    )
-
-    # default parent values
-    PARENTS=(
-    drive       ""
-    encryption  "partition"
-    filesystem  "partition"
-    logical     ""
-    partition   "drive"
-    subvolume   "filesystem"
-    swap        ""
-    )
-
-    # multiple siblings of the following type are subsumed by a single parent
-    # (when said parent is absent)
-    # this needs to be addressed by the make step in inflation
-    MULTI=(
-    drive       ""
-    encryption  ""
-    filesystem  ""
-    logical     ""
-    partition   "drive"
-    subvolume   "filesystem"
-    swap        ""
-    )
-
-    # the valid sibling device types for a given device type
-    SIBLINGS=(
-    drive       "drive"
-    encryption  ""
-    filesystem  ""
-    logical     ""
-    partition   "partition"
-    subvolume   "subvolume"
-    swap        ""
-    )
-
-    # compile lists of valid descendants per type
-    # (base on CHILDREN and VALUES)
-    compileValidDescendants () {
-        getChildTypes () {
-            typeset child
-            for child in ${=CHILDREN[$1]}
-            do
-                print $child
-                [[ $child != $1 ]] && getChildTypes $child
-            done
-        }
-        print ${(u):-$(getChildTypes $1)}
-    }
-    for type in ${=VALUES[type]}
-    do
-        DESCENDANTS[$type]=$(compileValidDescendants $type)
-    done
-
-    # compile lists of valid ancestors per type
-    # (base on CHILDREN and VALUES)
-    compileValidAncestors () {
-        # use order of values to ensure outer-to-inner order
-        getParentTypes () {
-            typeset type parent
-            typeset -a parents
-            # from inner to outer
-            for type in ${(Oa)=VALUES[type]}
-            do
-                if [[ -n ${CHILDREN[$type]:-} && \
-                      -n ${(M)${=CHILDREN[$type]}:#$1} ]]
-                then
-                    parents+=($type)
-                fi
-            done
-            print $parents
-            for parent in ${=parents}
-            do
-                [[ $parent != $1 ]] && getParentTypes $parent
-            done
-        }
-        # from outer to inner
-        print ${(Oau):-$(getParentTypes $1)}
-    }
-    for type in ${=VALUES[type]}
-    do
-        ANCESTORS[$type]=$(compileValidAncestors $type)
-    done
-
-
-    # options used during filesystem/luks/swap format/mount/open/activate
-    OPTIONS=(
-
-    "# mkfs"        "options that will be applied to various mkfs commands
-                     based on fstype, ssd"
-
-    mkfs            ''
-    mkfs,ssd        ''
-    mkfs,btrfs      '--force${label:+ --label ${(q-)label:-}}'
-    mkfs,btrfs,ssd  '--metadata single' # see man mkfs.btrfs
-    mkfs,vfat       '-F32 ${label:+ -n }${label:-}'
-
-    "# mount"       "options that will be applied to mount command based on
-                     fstype, ssd values"
-
-    mount           'defaults,x-mount.mkdir'
-    mount,ssd       'noatime'
-    mount,btrfs     'compress=lzo,space_cache,autodefrag,inode_cache'
-    mount,btrfs,ssd 'ssd,discard'
-
-    "# swap"        "swap and ssd specific options"
-
-    swap            ''
-    swap,ssd        '--discard'
-
-    "# LUKS"        "both luks formatting and option options"
-
-    luks,format     ''
-    luks,open       ''
-    luks,open,ssd   '--allow-discards'
-
-    )
-
-    # --force-password below allows weak passphrases (for testing only)
-    if ${FORCE:-false} || ${TEST:-false}; then
-        OPTIONS[luks,format]='--force-password'
-    fi
-
-    # TODO: all presets at this point will be for partitions, though we can stick
-    # fstype, etc. info into them if we want to push out filesystems
-    # alternately, preset could be a new type
-    # e.g. preset biosboot
-    # or   preset --name biosboot
-    # i like this less since it's not obvious to the user reading the template
-    # that it's a partition
-    # better to do:
-    # partition --preset biosboot
-    # the --preset values should be appended AFTER all other values in the line
-    # that way anything else will override the presets
-    # e.g.
-    # partition --preset biosboot --label 'my custom label'
-    # would expand to
-    # partition --preset biosboot --label 'my custom label' --size 1M --code ef02
-    #   --label 'BIOS Boot Partition'
-    # and only the first label would be used. that way user doesnt worry about
-    # location of override values. this is essentially how i handles defaults.
-
-    PRESET=(
-    biosboot                    "--size 1M
-                                 --code ef02
-                                 --label 'BIOS Boot Partition'"
-
-    efisys                      "--mountpoint /boot/efi
-                                 --size 200M
-                                 --code ef00
-                                 --label 'EFI System Partition'"
-
-    linuxboot                   "--mountpoint /boot
-                                 --size 200M
-                                 --code 8300
-                                 --label 'Linux Boot Partition'"
-
-    existing-windows-recovery   "--noclobber
-                                 --code 2700"
-
-    existing-linux-home         "--mountpoint /boot
-                                 --size 200M
-                                 --code 8300
-                                 --label 'Linux Boot Partition'"
-    )
-    ITEMOPTIONS_BOOL=(
-
-    bootable        "Identifies the storage item (drive, partition,
-                     filesystem) as a bootable device. May not always impact
-                     the item initialization."
-
-    encrypt         "Used on storage items that may be children of encryption
-                     to imply an encryption entry in the template file
-                     without adding it explicitly."
-
-    keep            "For drives, prevents any existing partitions from being
-                     removed, even without explicitly identifying them with
-                     noclobber."
-
-    noclobber       "Prevents changes to the item that matches the devpath
-                     specified. For instance, if --noclobber is set on a drive
-                     entry, and the path of the drive is identified as
-                     /dev/sda, then no changes will be made to /dev/sda or any
-                     child elements of /dev/sda."
-
-    replace         "For partitions, tries to match an existing partition based
-                     on partnum, devpath, code, label or size and then creates
-                     a replacement command (deletes and then recreates)."
-
-    ssd             "Identifies a drive as an ssd (if no devpath is specified
-                     for a device, you will be prompted to select a valid drive
-                     from a list and will also be prompted to identify is as
-                     either a mechanical or ssd drive)."
-    )
-    ITEMOPTIONS_SCAL=(
-
-    code            "CODE
-                     The partition GUID code as used by sgdisk. Can be either
-                     an sgdisk two-byte hex code such as 'ef02', or a full GUID
-                     type code such as 'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7'
-                     (see 'man sgdisk' and 'sgdisk -L'). Note that this is *not*
-                     a UUID."
-
-    description     "'DESCRIPTION'
-                     A short description that can be reported during script
-                     execution. Currently not utilized. Standard shell-script
-                     style comments prefixed by a # sign are also acceptable in
-                     the storage definition file and will be ignored by the
-                     script."
-
-    devpath         "/DEV/PATH
-                     The device path, for instance /dev/sda for a drive,
-                     /dev/sda1 for a partition, /dev/mapper/cryptvolume for an
-                     open luks device, etc. Not required. If no devpath is
-                     specified for a drive, you will be prompted to select a
-                     valid drive when the script executes."
-
-    fstype          "FILESYSTEM-NAME
-                     Filesystem types that this script knows about. Each fstype
-                     has a corresponding 'mkfs.*' command. Known filesystem
-                     types on this system include ${(@)VALUES[fstype]}"
-
-    label           "'ItemLabel'
-                     A human readable label for a partition, filesystem,
-                     encrypted device, etc."
-
-    luksformat      "'OPTIONS LIST'
-                     Enclose in single quotes. List of command line options
-                     applied by cryptsetup when formatting a new dm-crypt
-                     device in LUKS mode. For example:
-
-                     --luksformat '--cipher aes-xts-plain64 --key-size 256'
-                     
-                     Safe defaults are applied if this is absent."
-
-    luksopen        "'OPTIONS LIST'
-                     Enclose in single quotes. List of command line options
-                     applied by cryptsetup when opening a new or existing
-                     dm-crypt device in LUKS mode. For example:
-
-                     --luksopen '--cipher aes-xts-plain64 --key-size 256'
-
-                     Safe defaults are applied if this is absent."
-
-    mkfsoptions     "'OPTIONS LIST'
-                     Enclose in single quotes. List of command line options
-                     applied to a filesystem mkfs command when formatting."
-
-    mountoptions    "MOUNT,OPTIONS
-                     Comma separated list of options to apply to a specific
-                     storage device containing a filesystem when mounting.
-                     Generally not required. For example, the default
-                     mountoptions value applied to a btrfs filesystem is:
-
-                     '--force\${label:+ --label }\${label:-}'
-                     
-                     Note that use of other option values is possible by
-                     simply using the variable form of the option name (e.g.
-                     '\$label' for option '--label'."
-
-    mountpoint      "/MOUNT/POINT
-                     The absolute path to the mountpoint for a storage item.
-                     If not set, then the item will not be mounted!"
-
-    partitioning    "NOT YET IMPLEMENTED
-                     Type of partitioning. Defaults to 'gpt'. Can be set to
-                     gpt, mbr, or btrfs."
-
-    partnum         "PARTITION_NUMBER
-                     This is automatically assigned but may also be specified
-                     manually on noclobber partitions or on partitions you wish
-                     to manually control the order/partition number of."
-
-    pass            "PASSPHRASE
-                     Passphrase for a encryption item. Insert obvious security
-                     warning about saving passphrases in files here."
-
-    preset          "PRESETNAME
-                     Use a preset value for the given type. For example, the
-                     preset 'boot' for a partition will set the type code,
-                     mountpoint, and size to specific values."
-
-    size            "SIZE
-                     Size of a partition. May be specified in either sgdisk
-                     friendly absolute size format using the following
-                     suffixes: kibibytes (K), mebibytes (M), gibibytes (G),
-                     tebibytes (T), or pebibytes (P), or may be a percentage
-                     value which will use the specified percent of the
-                     *available* space on the drive (excluding any partitions
-                     preserved using --noclobber) such as '30%'. You may also
-                     enter 'max' as a value to use the maximum available
-                     (remaining) free space after all other partitions have
-                     been assigned. Using the value 'ram' will similarly set
-                     the partition size to match the install system memory,
-                     useful for partitions that contain swap devices. Note
-                     that if a partition does contain a swap device without
-                     a size value assigned to either, a size of 'ram' will be
-                     assigned by default."
-
-    type            "TYPE
-                     Any of the valid storage device types. Unlike the other
-                     options in the fields list, this is *not* specified with
-                     an extended option style '--' prefix. Rather each line
-                     starts with the type word. Valid types: ${(@)VALUES[type]}"
-
-    )
-
-    # fields that are valid for use. not all valid for all storage types.
-    FIELDS[boolean]=${(k)ITEMOPTIONS_BOOL}
-    FIELDS[scalar]="${(k)ITEMOPTIONS_SCAL}"
-
-    # partition GUID global type code lookup table
-    # (translate from sgdisk two byte codes to full GUID)
-    # this is not exhaustive
-    # cf http://sourceforge.net/p/gptfdisk/code/ci/master/tree/parttypes.cc
-    # cf http://www.freedesktop.org/wiki/Specifications/DiscoverablePartitionsSpec/
-    # cf http://www.freedesktop.org/software/systemd/man/systemd-gpt-auto-generator.html
-    # cf http://en.wikipedia.org/wiki/GUID_Partition_Table
-    # cf http://www.sepago.de/e/nicholas/2012/07/25/windows-recovery-environment-re-explained
-    # cf http://technet.microsoft.com/en-us/library/dd744301(v=ws.10).aspx
-
-    CODES=(
-    0100,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-12"
-    0400,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16 < 32M"
-    0600,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16"
-    0700,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - NTFS (or HPFS)"
-    0b00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-32"
-    0c00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-32 LBA"
-    0c01,E3C9E316-0B5C-4DB8-817D-F92DF00215AE "Microsoft reserved"
-    0e00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - FAT-16 LBA"
-    1100,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-12"
-    1400,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16 < 32M"
-    1600,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16"
-    1700,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden NTFS (or HPFS)"
-    1b00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-32"
-    1c00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-32 LBA"
-    1e00,EBD0A0A2-B9E5-4433-87C0-68B6B72699C7 "Microsoft basic data - Hidden FAT-16 LBA"
-    2700,DE94BBA4-06D1-4D40-A16A-BFD50179D6AC "Windows RE"
-    8200,0657FD6D-A4AB-43C4-84E5-0933C84B4F4F "Linux swap"
-    8300,0FC63DAF-8483-4772-8E79-3D69D8477DE4 "Linux filesystem"
-    8301,8DA63339-0007-60C0-C436-083AC8230908 "Linux reserved"
-    8302,933AC7E1-2EB4-4F13-B844-0E14E2AEF915 "Linux /home"
-    8303,44479540-F297-41B2-9AF7-D131D5F0458A "Linux x86 root (/)"
-    8304,4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709 "Linux x86-64 root (/)"
-    8305,B921B045-1DF0-41C3-AF44-4C6F280D3FAE "Linux ARM64 root (/)"
-    8306,3B8F8425-20E0-4F3B-907F-1A25A76F98E8 "Linux /srv"
-    8e00,E6D6D379-F507-44C2-A23C-238F2A3DF928 "Linux LVM"
-    ab00,426F6F74-0000-11AA-AA11-00306543ECAC "Apple boot"
-    af00,48465300-0000-11AA-AA11-00306543ECAC "Apple HFS/HFS+"
-    af01,52414944-0000-11AA-AA11-00306543ECAC "Apple RAID"
-    af02,52414944-5F4F-11AA-AA11-00306543ECAC "Apple RAID offline"
-    af03,4C616265-6C00-11AA-AA11-00306543ECAC "Apple label"
-    af04,5265636F-7665-11AA-AA11-00306543ECAC "AppleTV recovery"
-    af05,53746F72-6167-11AA-AA11-00306543ECAC "Apple Core Storage"
-    ea00,BC13C2FF-59E6-4262-A352-B275FD6F7172 "Freedesktop BOOT"
-    ed00,F4019732-066E-4E12-8273-346C5641494F "Sony system partition"
-    ed01,BFBFAFE7-A34F-448A-9A5B-6213EB736C22 "Lenovo system partition"
-    ef00,C12A7328-F81F-11D2-BA4B-00A0C93EC93B "EFI System"
-    ef01,024DEE41-33E7-11D3-9D69-0008C781F39F "MBR partition scheme"
-    ef02,21686148-6449-6E6F-744E-656564454649 "BIOS boot partition"
-    fd00,A19D880F-05FC-4D3B-A006-743F0F84911E "Linux RAID"
-    )
-
-    # generate short and long code lookup/reverse lookups
-    CODES+=(
-    ${(k)=CODES//,/ }
-    ${(k)=CODES//(#b)(#s)(*),(*)(#e)/$match[2] $match[1]}
-    )
-    
-}
-__captureEnvironment () {
-    # creates an array with keys formatted similarly to:
-    # output_array[/dev/sda1,mountpoint]
-    . <(localopts ignore_env: output_array: debug_file:)
-
-    ${(P)ignore_env:-false} && return 0
-
-    typeset -Ag $output_array
-    typeset -A STAGING
-    typeset -T lsblk_fields_list lsblk_fields ','
-    lsblk_fields=(
-        LABEL
-        MODEL
-        MOUNTPOINT
-        NAME
-        PARTLABEL
-        RM
-        RO
-        SIZE
-        TYPE
-        UUID
-        VENDOR
-        )
-    for line in ${"${(@f)$(lsblk -Pp -o $lsblk_fields_list)}"}
-    do
-        STAGING=(${(0)line//(#m)[[:WORD:]]##=/${(#):-0}${MATCH%=}${(#):-0}})
-        typeset devname=${(Q)STAGING[NAME]%% #}
-        unset "STAGING[NAME]"
-        typeset key="" value=""
-        for key in ${(k)STAGING}
-        do
-            if [[ -n ${${value::=${(Q)STAGING[$key]%% #}}%0} ]]
-            then
-                eval $output_array'[$devname,${(L)key}]=$value'
-            fi
-        done
-    done
-
-    # get existing partition codes
-    if [[ $USERNAME == root ]]
-    then
-
-        # list of available partitions on system
-        # (first set all_types, then pull out the partitions)
-        typeset -A all_types 
-        : ${(AA)all_types::=${(Pkv)${:-${output_array}[(I)*type]}}}
-        typeset -a all_partitions
-        all_partitions=(${(k)all_types[(R)part]%,type})
-
-        typeset longcode short_code
-        for partition in $all_partitions
-        do
-            # if sgdisk chokes on the disk, skip it
-            if sgdisk ${partition%%[0-9]#} &>/dev/null
-            then
-                longcode=${${:-"$(sgdisk -i${(M)partition%%[0-9]#} ${partition%%[0-9]#})"}//(#b)*GUID code: ([^[:space:]]##)*/$match}
-                eval $output_array'[$partition,longcode]=${(u)longcode}'
-                [[ -n ${shortcode::=${CODES[$longcode]:-}} ]] && \
-                    eval $output_array'[$partition,shortcode]=${(u)shortcode}'
-            fi
-        done
-    else
-        warn "Skipping partition code inferrence as script is not being run as root.
-              If run as root, $SCRIPTNAME will use sgdisk to infer --noclobber
-              partition matches based on codes if present. This is non-critical."
-    fi
-
-    debugCapture BLOCKENV
-}
-__fileLocate () {
-
-    # takes a filename, relative path, absolute path, or url, returns a local,
-    # absolute file path (either discovered or downloaded) with an exit code
-    # of 1 for failure. the zsh sublist below first checks for a remote file
-    # and downloads it if that is the  case, then tries to just source the
-    # file as give (so either in the PWD or an absolute path or a valid
-    # relative path), and if that fails, it then looks in the scriptroot and
-    # recursive subdirectories for a match, finally returning an exit code 1
-    # if it fails.
-
-    . <(localopts input_filepath: output_filepath: tmpdir: root: debugmode:)
-
-    typeset -a r s
-
-    # if no file has been supplied
-    if [[ -z ${(P)input_filepath:-} ]]
-    then
-        # if we are in debug output mode then dump environment
-        if ${(P)debugmode:-false}
-        then
-            alert "No input file supplied, saving system environment only due
-            to --debug mode being set." 1>&2
-            exit 0
-        # otherwise show minimal usage
-        else
-            __usage --minimal
-            alert "Storage definition filename, path or URL required.
-                        See the ${SCRIPTROOT}/storage-patterns subdirectory."
-            exit 0
-        fi
-    elif [[ ${(P)input_filepath} =~ "(http|ftp)s?:.*" ]]
-    then
-         curl -sL "$input_filepath" \
-              -o ${res::=${tmpdir%/}/${input_filepath:t}} || res=""
-    elif [[ ! -f "${res::=${(P)input_filepath:a}}" ]]
-    then
-         [[ -f "${res::=${r[${s[(i)${${(o@)${(@A)s::=${(@)${(fA)r::=$(\
-             print -l \
-             ${(P)root}/***/${(P)input_filepath}(.onOd:A))}//[^\/]/}}}[1]}]:-}]:-}}" ]]\
-             || res=""
-    fi
-    # at this point will have a result if we were able
-    # otherwise fail
-    if [[ -n "$res" ]]; then
-        eval typeset -g $output_filepath="$res"
-        report "Using source file $res"
-    else
-        fail "Failed to locate file ${(P)input_filepath}"
-    fi
-}
-__fileRead () {
-    . <(localopts filepath: output_array: )
-    typeset -ag $output_array
-    eval $output_array'=("${(@f)$(< ${(P)filepath})}")'
-    debugCapture $output_array
-}
-__fileClean () {
-    # convert storage definition file from supplied format to one ready for
-    # further conversion to array of records. removes all comments, merges
-    # escaped newlines, etc. converts types (drive, partition to optargs,
-    # records indentation level for later processing.
-    . <(localopts file_raw_array: output_array: )
-
-    # note that without the noted comment strip :# removal below,
-    # we have a problem with files that have trailing comments
-    typeset -a e
-    typeset counter=${(#):-29}
-    e=(
-    ': '
-    '${(AP)output_array::='
-    '${'
-    '${'
-    '${'
-    '${'
-    '${(s:; :j: :)'
-    '${'
-    '${(@Z+C+)'
-    '${(F)'
-    '${'$file_raw_array':#[[:blank:]]#\#*}' '# added a comment strip here'
-    '#${'$file_raw_array'}'                 '# original'
-    '//(#b)'
-    '(#s)'
-    '( #)'
-    '/${(l.${#match[1]}..'$counter'.):-}'
-    '}}}}'
-    '//(#b)'
-    '(#s)'
-    '('$counter'#)'
-    '(*)'
-    '/'
-    '${match[2]} '
-    '--indent '
-    '${#match[1]}}'
-    '//'$counter'/}'
-    '//(#s)'
-    '\#*(#e)/}'
-    '//(#s)'
-    '/--type }}'
-    )
-    eval ${(j..)e:#\#*}
-}
-__fileConvertToArray () {
-    . <(localopts \
-            input_array:    \
-            output_array:   \
-            fields_array:   \
-            previous_index: \
-            previous_indent:)
-
-    typeset -Ag $output_array
-
-    # write staging array if this is our first call to the function
-    # (treat input as immutable)
-    if ! (( ${+previous_index} )); then
-        unset STAGING # in case used in other functions clean up if they didn't
-        typeset -ag STAGING
-        eval 'STAGING=("${(@)'$input_array'}")'
-        input_array=STAGING
-    fi
-
-    typeset -a bool; bool=(${(P)=${:-${fields_array}[boolean]}})
-    typeset -a scal; scal=(${(P)=${:-${fields_array}[scalar]}})
-    typeset -a opts; opts=(${bool} ${scal})
-
-    typeset index
-    typeset -i sibling_index
-
-    while ${${(P)input_array:+true}:-false}; do # process array line by line
-
-        eval set -- ${(P)${input_array}[1]};
-        . <(localopts ${bool} ${^scal}: indent:)
-
-        #typeset leftovers
-        #leftovers="${*:-NULL}"
-
-        if (( $indent > ${previous_indent:=$indent} )); then # child, recurse
-
-            $0 --input_array $input_array \
-                --output_array $output_array \
-                --fields_array $fields_array \
-                --previous_index $index \
-                --previous_indent $indent
-            
-        elif (( $indent == $previous_indent )); then # valid sibling; process
-
-            # generate index path (e.g. 1,2,1) for array subscript
-            index=${previous_index:-}${previous_index:+,}$((++sibling_index))
-
-            # warn if anything is left over, but don't fail
-            if [[ -n ${leftovers:-} ]]; then
-
-                alert "Unknown option/argument values for item type '$type'
-                      encountered while reading storage definition file:
-                      ${leftovers} This is non-critical."
-
-                # If the beginning of the leftovers match an option name
-                # suggest that the user forgot the -- prefix
-                if [[ "${leftovers:-}" =~ (^(${(j:|:)~opts}).*) ]]; then
-                    alert "Did you forget the -- prefix to specify the option
-                        name?\nIf so, try changing it to: --$*\n" 1>&2
-                fi
-
-            fi
-
-            # TODO: re-set optargs and process them here, since
-            # we are scraping the o value output of localopts, a
-            # really bad way to do this. better to iterate over opts
-            eval set -- ${(P)${input_array}[1]};
-            . <(localopts ${bool} ${^scal}: indent:)
-            typeset leftovers="${@:-}"
-            # assign values to storage array (this assigns all of them)
-            params='${=${:-${(@)^${(@M)${(@k)o##-#}//(#m)(*)/${output_array}'
-            params+='[${index}${index:+,}${MATCH}]${MATCH:+=}${(q)o[--'
-            params+='${MATCH}]#=}}};}//typesetNULL/typeset }' 
-
-            eval ${(e)params}
-
-            # strip indent values (could be in a pattern above as well)
-            # to normalize test output (indent value compute may change)
-            eval 'unset "${:-${output_array}[$index,indent]}"'
-
-            # remove first item in array since we have assigned it to
-            # output_array
-            eval $input_array'[1]=()';
-
-        else # return from recursion or function
-            return 0
-        fi
-    done
-
-    # remove unrequired indent values
-    # (this doesn't need to be eval'd but it was screwing up syntax
-    # highlighting otherwise... TODO
-
-}
-__inferMissingElements () {
-    . <(localopts \
-        input_array: \
-        fields_array: \
-        inherit_array: \
-        valid_array: \
-        infer_off_option:
-        )
-
-    ${(P)infer_off_option:-false} && return 0
-
-    # nonzero exit status breaks us out of the loops until
-    # all inferences pass without making changes.
-    # this is not the optimal solution as race conditions
-    # can occur if the tests were to revert previous changes,
-    # but it's ok for now...
-
-    inferDrive
-
-    inferRecords () {
-        . <(localopts start_at:)
-        typeset -a children
-        children=($(getChildren ${start_at:-}))
-        typeset index
-        for index in $children
-        do
-            makeActive $index
-            inferParentPartition     || return 1
-            inferParentEncryption    || return 1
-            inferParentFilesystem    || return 1
-            inferChildFilesystem     || return 1
-            $0 --start_at $index     || return 1
-        done
-    }
-
-    inferInheritedValues () {
-        . <(localopts start_at:)
-        typeset -a children
-        children=($(getChildren ${start_at:-}))
-        typeset index
-        for index in $children
-        do
-            makeActive $index
-            #inferNoclobber         || return 1
-            #inferSsd               || return 1
-            inferClaimFromDescendant || return 1
-            inferInheritUp          || return 1
-            inferInheritDown        || return 1
-            $0 --start_at $index    || return 1
-        done
-    }
-
-    inferTypeSpecificValues () {
-        . <(localopts start_at:)
-        typeset -a children
-        children=($(getChildren ${start_at:-}))
-        typeset index
-        for index in $children
-        do
-            makeActive $index
-            inferFilesystemValues   || return 1
-            inferPartitionValues    || return 1
-            $0 --start_at $index    || return 1
-        done
-    }
-
-    while ! inferRecords; do :; done
-    while ! inferInheritedValues; do :; done
-    while ! inferTypeSpecificValues; do :; done
-}
+#    inferDrive
+#
+#    inferRecords () {
+#        . <(localopts start_at:)
+#        typeset -a children
+#        children=($(getChildren ${start_at:-}))
+#        typeset index
+#        for index in $children
+#        do
+#            makeActive $index
+#            inferParentPartition     || return 1
+#            inferParentEncryption    || return 1
+#            inferParentFilesystem    || return 1
+#            inferChildFilesystem     || return 1
+#            $0 --start_at $index     || return 1
+#        done
+#    }
+#
+#    inferInheritedValues () {
+#        . <(localopts start_at:)
+#        typeset -a children
+#        children=($(getChildren ${start_at:-}))
+#        typeset index
+#        for index in $children
+#        do
+#            makeActive $index
+#            #inferNoclobber         || return 1
+#            #inferSsd               || return 1
+#            inferClaimFromDescendant || return 1
+#            inferInheritUp          || return 1
+#            inferInheritDown        || return 1
+#            $0 --start_at $index    || return 1
+#        done
+#    }
+#
+#    inferTypeSpecificValues () {
+#        . <(localopts start_at:)
+#        typeset -a children
+#        children=($(getChildren ${start_at:-}))
+#        typeset index
+#        for index in $children
+#        do
+#            makeActive $index
+#            inferFilesystemValues   || return 1
+#            inferPartitionValues    || return 1
+#            $0 --start_at $index    || return 1
+#        done
+#    }
+#
+#    while ! inferRecords; do :; done
+#    while ! inferInheritedValues; do :; done
+#    while ! inferTypeSpecificValues; do :; done
+#}
 __reorderPartitions () {
     # move any --size max partition to end of siblings
     # so that it is made last by partitioning command
@@ -2068,7 +2066,7 @@ __reorderPartitions () {
 __scrubStructures () {
     . <(localopts storage_array: values_array:)
     typeset record
-    for record in ${STORAGE[(I)*,(${(j:|:)${=VALUES[type]}}|notes)]}
+    for record in ${STORAGE[(I)*,(${(j:|:)${=VALUES[type]}}|notes|encrypt)]}
     do
         unset "STORAGE[$record]"
     done
@@ -2136,7 +2134,7 @@ __validateStructures () {
             valueInList validfields $field || {
                 fail "'$field' is not a valid field of type 
                           '${ACTIVE[type]}'. Run $SCRIPTNAME with the
-                          --allhelp option to review valid options types"
+                          --usage option to review valid options types"
                         }
         done
 
@@ -3119,7 +3117,7 @@ __payloadPrint () {
 }
 __usage () {
 
-    . <(localopts readme minimal)
+    . <(localopts readme minimal listcodes)
 
     typeset marginpercent=2 softtab=4
     typeset margin=$(( marginpercent*$COLUMNS/100 ))
@@ -3209,7 +3207,23 @@ __usage () {
             print -- ${COLOR[magenta]:-}${(l.$margin...):-}${${(O)${${subheading## #}%% #}//?/-}[1][margin,-1]}${COLOR[default]:-}\\n
         }
     }
-
+    # list codes
+    () {
+        ${listcodes:-false} || return 0
+        typeset key
+        typeset h hh h1=SHORT h2=LONGCODE h3=DESCRIPTION
+        h="$h1 ${(r.${(vc)#CODES[(i)????]}...)h2} $h3"
+        hh="${h1//?/-} ${(r.${(vc)#CODES[(i)????]}..-.):-}"
+        print "\n$h\n$hh" ${${(Ov)CODES[(I)????,*]//?/-}[1]}
+        for key in ${(k)CODES[(I)????]}
+        do
+            print -n "${(r.${#h1}...)key} " 1>&2
+            print -n "$CODES[$key] " 1>&2
+            print "$CODES[$key,$CODES[$key]]" 1>&2
+        done
+        print "\nSee also 'man sgdisk'\n"
+        exit
+    }
     # minimal usage
     () {
         ${minimal:-false} || return 0
@@ -4743,6 +4757,10 @@ track () {
     print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
     print ${COLOR[default]:-} 1>&2
     eval $@
+}
+listTemplates () {
+    print "Reading template files from $SCRIPTROOT/templates"
+    print -l -- $SCRIPTROOT/templates/***~(*README)(#q.:t)
 }
 
 # vim: set filetype=sh : 
