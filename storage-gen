@@ -147,11 +147,12 @@ __MAIN () {
 
     track __initializeRulesets
 
-    ${HELP:-false}   && { __usage --minimal; exit 0 }
-    ${README:-false} && { __usage --readme; exit 0 }
-    ${USAGE:-false}  && { __usage ; exit 0 }
-    ${LISTCODES:-false}   && { __usage --listcodes ; exit 0 }
-    ${LIST:-false}   && { __listTemplates ; exit 0 }
+    ${USAGE:-false}     && { __usage ; exit 0 }
+    ${README:-false}    && { __usage --readme; exit 0 }
+    ${ADVANCED:-false}  && { __usage --mini --advanced; exit 0 }
+    ${HELP:-false}      && { __usage --mini; exit 0 }
+    ${LISTCODES:-false} && { __usage --listcodes ; exit 0 }
+    ${LIST:-false}      && { __listTemplates; exit 0 }
 
     [[ -z $SOURCEDEBUG ]] || { # prepare for debugsource usage
         [[ -f $SOURCEDEBUG ]] && {
@@ -174,7 +175,7 @@ __MAIN () {
 
     }
 
-    ${VALUESDUMP:-false} && {
+    ${ENVDEBUG:-false} && {
         debugDump --array BLOCKENV
         exit 0
     }
@@ -276,8 +277,8 @@ __MAIN () {
         --input_filepath    SOURCEFILE
 
     ((   $TREE          \
-    ||   $VALUESDUMP )  \
-    && ! $SCRIPT ) ||   {
+    ||   $ENVDEBUG )  \
+    && ! $FORCE ) ||   {
     track __payloadPrint                \
         --input_array       PAYLOAD     \
         --comments_option   MINIFY      }
@@ -551,13 +552,12 @@ __processScriptOptions () {
     # --help displays a brief version of each description consisting of the
     # first line only of item.
 
-    typeset -Ag \
-        OPTS_BOOL OPTS_BOOL_ALT \
-        OPTS_ARGS OPTS_ARGS_OPT OPTS_ARGS_ALT OPTS_ARGS_OPT_ALT
+    makeOptArray () { typeset -Ag $1; typeset -ag OPTARRAYS; OPTARRAYS+=($1) }
 
+    makeOptArray OPTS_BOOL
     OPTS_BOOL=(
 
-    HELP        "Show this help information.
+    HELP        "Show summary of help information.
                  Use --usage for expanded help."
 
     NOQUERY     "No queries, make best guesses.
@@ -566,6 +566,8 @@ __processScriptOptions () {
                  provided by the --drives option), automatically match partitions
                  when there is only one existing partition that matches the values,
                  etc. Best to run without this option first to see what happens."
+
+    LIST        "List builtin $SCRIPTNAME templates."
 
     IGNORE      "Ignore live system environment.
                  Disregards the current systems drive and partition environment.
@@ -577,11 +579,7 @@ __processScriptOptions () {
                  configuration. This is different from full environment simulation
                  with the --debug and --debugsource options."
 
-    KEEP        "Keep all existing partitions.
-                 Same as setting the --noclobber option on each drive. Prevents
-                 existing partitions from being affected."
-
-    MINIFY      "No comments in the final script.
+    COMPACT     "No comments in the final script.
                  Turns off all comments and blank lines in the script output.
                  Removing these does not change the functionality of the final
                  script."
@@ -592,12 +590,6 @@ __processScriptOptions () {
                  script itself unless the --commentsoff option is selected. With
                  this option, a single error message will be output to standard
                  error if the script fails."
-
-    SCRIPT      "Always display script output.
-                 This happens by default UNLESS either the --tree or --output
-                 options have been passed on the command line. In these cases,
-                 passing the --script option restores the visual output of the
-                 script as well."
 
     TREE        "Print tree diagram of output.
                  After evaluating the storage template, a tree relationship is
@@ -613,15 +605,16 @@ __processScriptOptions () {
                  with the --yes option to answer all yes/no queries with a default
                  value."
 
-    FSTAB       "(not yet implemented)"
-
     USAGE       "Displays detail usage information.
                  Adds a summary of the types of options and arguments that are valid
                  for each storage type entry. Redirect to a file or pipe through a
                  pager such as less. See also the $SCRIPTNAME README available in
                  the project git repository."
 
+    ADVANCED    "Like --help, but includes advanced options."
+
     )
+    makeOptArray OPTS_ARGS
     OPTS_ARGS=(
 
     DRIVES      "'/dev/sdX,/dev/sdY'
@@ -635,27 +628,18 @@ __processScriptOptions () {
                  option is used without the --ignore option, then the current
                  system is checked for the presence of these drives first."
 
-    ROOTMOUNT   "'/MOUNT/ROOT/PATH'
+    MOUNTROOT   "'/MOUNT/ROOT/PATH'
                  Preinstall mountpoint root path.
                  Set mount root directory (if not set, use the default '/mnt').
                  Argument is a valid, absolute path to an existing directory.
                  This path is used during system installation as a chroot  and
                  is *not* recorded in any fstab."
 
-    OUTPUT      "OUTPUT_FILE_NAME
-                 Optional output filename.
-                 If this option is provided, the final executable script will be
-                 written to the path provided. If not set, script is displayed on
-                 standard output and may be saved using redirection."
-
     )
-    OPTS_ARGS_OPT=(
-    LIST        "List builtin or discoverable templates (from the $SCRIPTNAME
-                 template directory)."
-    )
+    makeOptArray OPTS_BOOL_ALT
     OPTS_BOOL_ALT=(
 
-    DEBUG       "Turn on debug tracking & always save debug log.
+    DEBUG       "Turn on debug tracking; always save debug log.
                  This option turns on minimal debug tracking and rolling script
                  trace capture (in case of error). This has a minimal performance
                  impact so is normally off. The debug log is saved by by default
@@ -664,11 +648,21 @@ __processScriptOptions () {
                  file contains the block device configuration and the original
                  template file content. It may be submitted with bug reports."
 
+    KEEP        "Keep all existing partitions.
+                 Same as setting the --noclobber option on each drive. Prevents
+                 existing partitions from being affected."
+
+    FORCE       "Force the script to always output to console.
+                 This happens by default UNLESS either the --tree or --output
+                 options have been passed on the command line. In these cases,
+                 passing the --script option restores the visual output of the
+                 script as well."
+
     README      "Output usage in README markdown format."
 
     COLOROFF    "Do not use colors in console output."
 
-    INFEROFF    "Turn off inference of items (drives, partitions, defaults)."
+    INFEROFF    "Turn off inference of missing values."
 
     LISTCODES   "List GUID type codes in short and long."
 
@@ -679,20 +673,29 @@ __processScriptOptions () {
                  receive a separate passphrase query step in the final script.
                  Yes, it's a multipass,"
 
-    NOMATCH     "Turn off match attempts for noclobber partitions. Normally, if a
-                 the --noclobber option has been specified (or inherited) by a
-                 partition entry in the storage template (or a partition implied
-                 by another entry), $SCRIPTNAME will make best effort to match it
-                 to an existing partition based on available information in the
-                 template and on the system itself. See the --usage section on
-                 matching for more information."
+    NOMATCH     "No matching existing partitions.
+                 Normally, if the --keep or --replace option has been specified
+                 (or inherited) by a partition entry in the storage template (or
+                 a partition implied by another entry), $SCRIPTNAME will make
+                 best effort to match it to an existing partition based on
+                 available information in the template and on the system itself.
+                 See the --usage section on matching for more information."
 
-    VALUESDUMP  "Dump environment values in human readable format for debugging."
+    ENVDEBUG    "Dump environment values for debugging."
+
+    VERBOSE     "Display details during processing."
 
     WARNOFF     "Turn off warning query in script output."
 
     )
+    makeOptArray OPTS_ARGS_ALT
     OPTS_ARGS_ALT=(
+
+    OUTPUT      "OUTPUT_FILE_NAME
+                 Optional output filename.
+                 If this option is provided, the final executable script will be
+                 written to the path provided. If not set, script is displayed on
+                 standard output and may be saved using redirection."
 
     SOURCEDEBUG "FILENAME
                  Simulate environment from debug file.
@@ -708,34 +711,45 @@ __processScriptOptions () {
                  This option is merely a more explicit alternative to that."
 
     )
+    # currently unused, these provide optional zparseopts options
+    # it should be noted that these don't work on the command line if there is
+    # any space between the option and value, so '--myoptional value' will return
+    # true, not "value" (which will remain in the options list). The correct form
+    # for optional values is without a space, so: "--myoptionalvalue" or "-mvalue"
+    # or "-m=value" or "--myoptional=value".
+    makeOptArray OPTS_OPT
+    makeOptArray OPTS_OPT_ALT
+
+#    FSTAB       "(not yet implemented)"
 
     # capture the original command line for logging
     typeset command_line="$SCRIPTNAME $*"
 
     # check for collisions in option short/long forms
-    typeset -a allopts; allopts=(
-    ${(k)=OPTS_BOOL//(#b)(*)/${${(L)=match}:0:1} ${(L)match}}
-    ${(k)=OPTS_BOOL_ALT//(#b)(*)/${${(U)=match}:0:1} ${(L)match}}
-    ${(k)=OPTS_ARGS//(#b)(*)/${${(L)=match}:0:1} ${(L)match}}
-    ${(k)=OPTS_ARGS_OPT//(#b)(*)/${${(L)=match}:0:1} ${(L)match}}
-    ${(k)=OPTS_ARGS_ALT//(#b)(*)/${${(U)=match}:0:1} ${(L)match}}
-    ${(k)=OPTS_ARGS_OPT_ALT//(#b)(*)/${${(U)=match}:0:1} ${(L)match}}
-    )
-    if [[ ${#allopts} -gt ${#${(u)allopts}} ]]
+    typeset case colon; typeset -a opts cmd; opts=(); cmd=()
+    for optarray in $OPTARRAYS
+    do
+        [[ $optarray =~ _ALT ]] && case="U" || case="L"
+        e=('${(k)='
+           $optarray'//(#b)(*)/${${('
+           $case')=match}:0:1} ${(L)match}}')
+           opts+=(${=${(ej::)e}})
+    done
+    if [[ ${#opts} -gt ${#${(u)opts}} ]]
     then
-        typeset allopt
-        for allopt in $allopts
+        typeset opt
+        for opt in $opts
         do
-            if (( ${(M)#allopts:#$allopt} > 1 ))
+            if (( ${(M)#opts:#$opt} > 1 ))
             then
                 print "\nSCRIPT OPTION COLLISION:" 1>&2
-                if [[ ${(c)#${(Mu)allopts:#$allopt}} -eq 1 ]]
+                if [[ ${(c)#${(Mu)opts:#$opt}} -eq 1 ]]
                 then
-                    print -- "-$allopt --${allopts[$((${allopts[(i)$allopt]}+1))]}" 1>&2
-                    print -- "-$allopt --${allopts[$((${allopts[(I)$allopt]}+1))]}" 1>&2
+                    print -- "-$opt --${opts[$((${opts[(i)$opt]}+1))]}" 1>&2
+                    print -- "-$opt --${opts[$((${opts[(I)$opt]}+1))]}" 1>&2
                 else
-                    print -- "-${allopts[$((${allopts[(i)$allopt]}-1))]} -$allopt" 1>&2
-                    print -- "-${allopts[$((${allopts[(I)$allopt]}-1))]} -$allopt" 1>&2
+                    print -- "-${opts[$((${opts[(i)$opt]}-1))]} -$opt" 1>&2
+                    print -- "-${opts[$((${opts[(I)$opt]}-1))]} -$opt" 1>&2
                 fi
                 break
             fi
@@ -744,50 +758,57 @@ __processScriptOptions () {
               Please change one of the option names or move to an ALT
               or long form only option array."
     fi
-
     # run zparseopts on all defined script options
-    eval zparseopts -D -E -- \
-    ${(k)OPTS_BOOL//(#b)(*)/${${(L)=match}:0:1}=$match -${(L)match}=$match} \
-    ${(k)OPTS_BOOL_ALT//(#b)(*)/${${(U)=match}:0:1}=$match -${(L)match}=$match} \
-    ${(k)OPTS_ARGS//(#b)(*)/${${(L)=match}:0:1}:=$match -${(L)match}:=$match} \
-    ${(k)OPTS_ARGS_OPT//(#b)(*)/${${(L)=match}:0:1}::=$match -${(L)match}::=$match} \
-    ${(k)OPTS_ARGS_ALT//(#b)(*)/${${(U)=match}:0:1}:=$match -${(L)match}:=$match}
-    ${(k)OPTS_ARGS_OPT_ALT//(#b)(*)/${${(U)=match}:0:1}::=$match -${(L)match}::=$match} \
+    # note that options (the keys of the above options associative array)
+    # may be listed in the array either upper or lower case, but the
+    # --long options are always presented lowercase, the global variables
+    # are always UPPERCASE and the short options are either -l lower or
+    # -U upper depending on whether they are in an _ALT array.
+    typeset case colon; typeset -a cmd; cmd=()
+    for optarray in $OPTARRAYS
+    do
+        [[ $optarray =~ _ARG ]] && colon=":" || colon=""
+        [[ $optarray =~ _OPT ]] && colon="::"
+        [[ $optarray =~ _ALT ]] && case="U" || case="L"
+        e=('${(k)'
+           $optarray'//(#b)(*)/${${('
+           $case')=match}:0:1}'
+           $colon'=${(U)match} -${(L)match}'
+           $colon'=${(U)match}}')
+        zparseopts -D -E -- ${=${(ej::)e}}
+    done
 
     # clean up the parsed options and assign to variables matching their names
-    # (so that TESTMODE, for example. receives a true/false value, DRIVES
+    # (so that TESTMODE, for example. receives a true/null value, DRIVES
     # receives and array value, etc.)
-    eval typeset -g \
-    ${(k)OPTS_BOOL//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-false}} \
-    ${(k)OPTS_BOOL_ALT//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-false}}
-    eval typeset -ag ${(k)OPTS_ARGS}
-    eval ${(k)OPTS_ARGS//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
-    eval ${(k)OPTS_ARGS_ALT//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
+    for optarray in ${(M)OPTARRAYS:#*_BOOL*}
+    do
+        e=('${(k)'$optarray'//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-}}')
+        typeset -g ${=${(ej::)e}}
+    done
 
-    # the input file can be set by --input or arg 1
-    typeset -g INPUTFILE=${INPUT:-${1:-}}
+    # if the _OPT (optional value) items have been set, see if they need a true
+    for optarray in ${(M)OPTARRAYS:#*_OPT*}
+    do
+        [[ $optarray =~ _ALT ]] && case="U" || case="L"
+        for opt in ${(Pk)optarray}
+        do
+            eval 'typeset so="-${('$case')opt:0:1}" lo="--${(L)opt}"'
+            [[ -z ${(P)opt:-} ]] && continue || :
+            [[ -z ${(P)opt#$lo} || -z ${(P)opt#$so} ]] && {
+            eval 'unset '$opt'; typeset -g '$opt'=true"'} || :
+            eval 'unset '$opt'; typeset -g '$opt'="'${${${(P)opt#$lo}#$so}#=}'"'
+        done
+    done
 
-    print "MOUNTROOT IS ${MOUNTROOT:-}"
-    print "MOUNTROOT IS ${(t)MOUNTROOT:-}"
-    # initializeScriptParameters
-    # Make sure we have user specified or default mountroot directory
-    typeset m="${MOUNTROOT:-}"
-    # we're going to either assign or reassign as a scalar and it comes
-    # in as an array from our options processing
-    # so unset first, then assign existing or default value
-    # TODO: this could be a one liner if I unset inside an assignment
-    # or possibly if I force set?
+    # options that take arguments (will end up as arrays)
+    for optarray in ${(M)OPTARRAYS:#*_ARG*}
+    do
+        [[ -n ${(Pk)optarray} ]] && eval typeset -ag ${(Pk)optarray} || continue
+        eval ${(Pk)optarray//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
+    done
 
-    unset MOUNTROOT; typeset -g MOUNTROOT="${m:-/mnt}"
-    [[ ${MOUNTROOT} =~ "/" ]] || MOUNTROOT="${$(pwd)%/}/${MOUNTROOT}"
-    [[ -d ${MOUNTROOT} ]] || {
-        __usage
-        fail "ERROR: Mountroot directory $MOUNTROOT not found."
-        }
-
-    # Convert DRIVES values from csv
-    [[ -n ${DRIVES:-} ]] && { DRIVES=(${=${(s:,:)DRIVES}}) }
-
+    # Prep color array, otherwise no color values if coloroff is set
     if ! ${COLOROFF:-false}; then
         typeset -Ag COLOR COLOR
         autoload colors; colors
@@ -798,6 +819,36 @@ __processScriptOptions () {
     else
         unset COLOR
     fi
+
+    # check remainder of command line; should have only one option
+    # (positional only) with no leading - or --
+    typeset -a uo; uo=(${(M)*:#-*})
+    [[ -n $uo ]] && {
+        __usage --mini
+        fail "Unknown command line option${uo[2]:+s}: $uo"
+        }
+
+    # the input file can be set by --input or arg 1
+    typeset -g INPUTFILE
+    [[ -n ${INPUT:-} ]] && INPUTFILE=${INPUT} || { INPUTFILE=${1:-} && shift }
+    [[ -z ${*:-} ]] || fail "Unknown command line content: $*" 
+
+    # Make sure we have user specified or default mountroot directory
+    typeset m="${MOUNTROOT:-}"
+    # we're going to either assign or reassign as a scalar and it comes
+    # in as an array from our options processing
+    # so unset first, then assign existing or default value
+    # TODO: this could be a one liner if I unset inside an assignment
+    # or possibly if I force set?
+    unset MOUNTROOT; typeset -g MOUNTROOT="${m:-/mnt}"
+    [[ ${MOUNTROOT} =~ "/" ]] || MOUNTROOT="${$(pwd)%/}/${MOUNTROOT}"
+    [[ -d ${MOUNTROOT} ]] || {
+        __usage --mini
+        fail "ERROR: Mountroot directory $MOUNTROOT not found."
+        }
+
+    # Convert DRIVES values from csv
+    [[ -n ${DRIVES:-} ]] && { DRIVES=(${=${(s:,:)DRIVES}}) }
 
     # debug log and a path to move it to if script fails
     # (so don't make user re run with --debug on a bad error)
@@ -826,7 +877,7 @@ __processScriptOptions () {
     print -l -- $debug_log_header > $DEBUGLOG
 
     ${DEBUG:-false} && {
-    print "ROLLING TRACKING ON"
+        typset -g VERBOSE=true
         typeset -ag ROLLING
         TRAPDEBUG () {
             for i in {1..4}
@@ -838,7 +889,6 @@ __processScriptOptions () {
     } || {
     track () { eval $@ }
     }
-
 }
 __initializeRulesets () {
 
@@ -1404,7 +1454,7 @@ __fileLocate () {
             exit 0
         # otherwise show minimal usage
         else
-            __usage --minimal
+            __usage --mini
             alert "Storage definition filename, path or URL required.
                         See the ${SCRIPTROOT}/storage-patterns subdirectory."
             exit 0
@@ -1674,7 +1724,7 @@ __inflateStructure () {
         [[ -n ${array:-} && -n ${index:-} && -n ${note:-} ]] || \
             fail "bad call to $0"
         eval $array'[$index,notes]+="* ${${=note}}\n"'
-        teelog --category note --color cyan ${=note}
+        teelog --verbose --category note --color cyan ${=note}
     }
     getTypeByIndex () {
         . <(localopts index: result:)
@@ -2066,7 +2116,10 @@ __reorderPartitions () {
 __scrubStructures () {
     . <(localopts storage_array: values_array:)
     typeset record
-    for record in ${STORAGE[(I)*,(${(j:|:)${=VALUES[type]}}|notes|encrypt)]}
+    typeset -a scrubfields
+    scrubfields=(encrypt ${=VALUES[type]})
+    ! ${VERBOSE:-} && scrubfields+=(notes)
+    for record in ${STORAGE[(I)*,(${(j:|:)scrubfields})]}
     do
         unset "STORAGE[$record]"
     done
@@ -2464,11 +2517,12 @@ __identifyDrives () {
                 eraser="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
 
                 msg="Drive $drive device selection"
-                ephemera "\\\n$msg\\\n${msg//?/-}"
-                ephemera "Select from list of available (unmounted, unselected)
-                          drives:\\\n" 1>&2
-                
+                display "\n$msg\n${msg//?/-}"
+                display "Select from list of available (unmounted,
+                         unselected) drives:"
+                print 1>&2 
                 typeset -i ad=0
+                typeset adrive
                 for adrive in $available_drives
                 do
                     print -n "$((++ad)) $adrive (" 1>&2
@@ -3117,7 +3171,7 @@ __payloadPrint () {
 }
 __usage () {
 
-    . <(localopts readme minimal listcodes)
+    . <(localopts readme mini advanced listcodes)
 
     typeset marginpercent=2 softtab=4
     typeset margin=$(( marginpercent*$COLUMNS/100 ))
@@ -3165,7 +3219,7 @@ __usage () {
     ${readme:-false} && {
     margin=0; wrap=80
     usageHighlight () {
-        . <(localopts indent: minimal)
+        . <(localopts indent: mini)
         typeset i=${indent:-0}
         typeset line="$@"
         (( ${(M)#${(Q)line}## #} > (i+2) )) && {
@@ -3225,8 +3279,7 @@ __usage () {
         exit
     }
     # minimal usage
-    () {
-        ${minimal:-false} || return 0
+    miniUsage () {
         print "\\n  usage: $SCRIPTNAME [templatename]" 1>&2
         print 1>&2
         typeset -A allopts
@@ -3238,11 +3291,14 @@ __usage () {
         opt_indent=$(( ${#${(kO@)minimal_opts//?/#}[1]}+7))
         typeset l=${(r.$margin...):-} print=:
 
-        for optset in OPTS_BOOL OPTS_ARGS
+        typeset -a optarrays
+        optarrays=(${OPTARRAYS:#${~advanced:-*_ALT*}})
+        for optset in $optarrays
         do
+            [[ $optset =~ _ALT ]] && case=U || case=L
             for opt in ${(okP)optset}
             do
-                optflags="-${(L)opt:0:1}, --${(L)opt}"
+                eval 'optflags="-${('$case')opt:0:1}, --${(L)opt}"'
                 optval=("${(@)${(fP)${:-${optset}[$opt]}}## #}")
                 if [[ $optset =~ ARGS ]]
                 then
@@ -3255,11 +3311,13 @@ __usage () {
                 print -- "  $optflags $optargs\n      ${optdesc}" 1>&2
             done
         done
-        print "\n  '$SCRIPTNAME --usage | less' or" 1>&2
-        print "  '$SCRIPTNAME --coloroff --usage | less'" 1>&2
-        print "   for more details and advanced options\n" 1>&2
-        exit 0
+        print "\n  For more details and advanced options:\n" 1>&2
+        print "      '$SCRIPTNAME --advanced'" 1>&2
+        print "      '$SCRIPTNAME --usage | less'" 1>&2
+        print "      '$SCRIPTNAME --coloroff --usage | less'\n" 1>&2
+        return 0
     }
+    ${mini:-false} && { miniUsage; return 0 }
 
     # general usage (from header at top of script)
     () {
@@ -4505,12 +4563,13 @@ debugLog () {
 }
 fail () {
     teelog --category FAILURE --color red "$*"
+    print 1>&2
     DEBUG=true
     exit 1
 }
-ephemera () {
+display () {
     # just print, no logging
-    ${QUIET:-false} || print "$*" 1>&2 
+    teelog --nolog --color default ${=*}
 }
 report () {
     teelog --category report --color green ${=*}
@@ -4518,17 +4577,26 @@ report () {
 teelog () {
     # print if not in quiet mode
     # write to named arrays for later log/script output
-    . <(localopts category: color: noprint)
-    [[ -n ${category} ]] || { print "MISSING CATEGORY" 1>&2; exit 1 }
-    typeset -ag CATEGORIES
-    CATEGORIES+=($category)
-    ${QUIET:-false} || ${noprint:-false} || {
+    . <(localopts category: color: noprint nolog verbose)
+    if [[ -z ${category:-} ]] && ! ${nolog:-false}
+    then
+        print "MISSING CATEGORY" 1>&2; exit 1
+    elif ! ${nolog:-false}
+    then
+        typeset -ag CATEGORIES
+        CATEGORIES+=($category)
+        typeset -ag REPORT_${(U)category}
+        eval REPORT_${(U)category}'+=("${${=@}}")'
+    fi
+    if ! ${noprint:-false} && ! ${QUIET:-false} && \
+    [[ ${VERBOSE:-false} == ${verbose:-${VERBOSE:-false}} ]]
+    then
+        if ! { ${verbose:-false} && ! ${VERBOSE:-false} }
         print -n "\\n${COLOR[${color:-default}]:-}" 1>&2;
-        print -n "$(print "${(U)category}: ${=*}" | fold -sw $COLUMNS)" 1>&2;
+        print -n "$(print "${(U)category:-}${category:+: }${=*}" \
+            | fold -sw $COLUMNS)" 1>&2;
         print "${COLOR[default]:-}" 1>&2;
-    }
-    typeset -ag REPORT_${(U)category}
-    eval REPORT_${(U)category}'+=("${${=@}}")'
+    fi
 }
 reportLog () {
     # dump report category arrays to script/log
@@ -4758,9 +4826,10 @@ track () {
     print ${COLOR[default]:-} 1>&2
     eval $@
 }
-listTemplates () {
-    print "Reading template files from $SCRIPTROOT/templates"
-    print -l -- $SCRIPTROOT/templates/***~(*README)(#q.:t)
+__listTemplates () {
+    print "\nReading template files from $SCRIPTROOT/templates\n" 1>&2
+    print -l -- $SCRIPTROOT/templates/***~(*README)(#q.:t) 1>&2
+    print 1>&2
 }
 
 # vim: set filetype=sh : 
