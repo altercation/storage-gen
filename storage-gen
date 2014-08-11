@@ -19,6 +19,10 @@ infer obvious values and sane defaults, unless instructed not to, and then
 gift wraps the output as an executable script for review/use. There is also
 a useful tree view output and live view.
 
+Try it:
+
+curl -L http://links.ethanschoonover.com/storage-gen | zsh
+
 Requirements:
 
 Init-storage expects certain linux utilities (lsblk, mount, mkfs.*) as well

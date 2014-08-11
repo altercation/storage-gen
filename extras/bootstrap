@@ -3,22 +3,18 @@
 # a convenience helper script to bootstrap the installation
 # of git and the cloning of the init-storage repo.
 #
-# can be accessed using a convenience url:
-# curl -L http://links.ethanschoonover.com/init-storage | zsh
-
-cat > /tmp/init-storage-bootstrap << 'EOF'
+# can be accessed using curl and a convenience url:
+#
+#     curl -L http://links.ethanschoonover.com/storage-gen | zsh
+ 
+name=storage-gen
+cat > /tmp/${name}-bootstrap << EOF
 pacman --noconfirm -Sy git;
 cd;
-git clone https://github.com/altercation/init-storage.git init-storage;
-ln -s $(pwd)/init-storage/init-storage /usr/local/bin/init-storage;
-print -b "\ninit-storage script ready to run:";
-print -b "enter the storage definition file name after the command";
-print -b "\n    # init-storage storage-definition-filename\n"
-print -b "See the init-storage/storage directory for examples, or"
-print -b "run init-storage --help for more information"
+git clone https://github.com/altercation/${name}.git ${name};
+ln -s \$PWD/storage/${name} /usr/local/bin/${name};
+$name --help
 EOF
 
-# make sure that curl/wget didn't fail during transfer by having written
-# out the file first and we then can be doubly certain by running a hash
-# on it.
-print "6c3240e838e7100c271269c6eca38325  /tmp/init-storage-bootstrap" | md5sum -c --quiet && zsh /tmp/init-storage-bootstrap
+# save above heredoc to temp file, then execute (safer)
+zsh /tmp/${name}-bootstrap
