@@ -23,15 +23,29 @@ tree view output and live view.
 Having booted the Arch Linux install medium, download the storage-gen script 
 with the following command. 
 
-    curl -L http://links.ethanschoonover.com/storage-gen | zsh 
+    # curl -L http://links.ethanschoonover.com/storage-gen | zsh 
+    # storage-gen --help 
+
+To create a configuration script for a typical new Arch Linux system, you could 
+use the following commands (these only output text or tree information, they do 
+not execute any changes to the system). 
+
+    # storage-gen new-typical 
+    # storage-gen new-typical --tree 
+
+If you had an existing system with, for example, a home partition you wanted to 
+keep, while erasing everything else and reinstalling the system, you could use 
+this: 
+
+    # storage-gen keep-home --tree 
 
 ### Trust but Verify: 
 
 storage-gen is non-destructive. It merely outputs a script that can (and must) 
 be reviewed prior to execution. You can run it on your live system safely. 
 However the final output script is potentially dangerous in that it makes 
-partition changes. It is absolutely the end-user responsibility to make sure 
-the final script does what they want it to! 
+partition changes. It is absolutely your own  responsibility to make sure the 
+final script does what you want it to! 
 
 ### Requirements: 
 
@@ -57,7 +71,7 @@ A storage-gen definition file for this might be:
 
 If this file was named "mystorage" you could then run storage-gen on it. 
 
-    storage-gen mystorage 
+    # storage-gen mystorage 
 
 And after being asked which of the available drives you wanted to use, the 
 following script would be output: 
@@ -77,11 +91,11 @@ while writing storage-definition files so you can confirm the results (for
 example, with an editor in one terminal or virtual console and the tree view in 
 another). 
 
-    storage-gen --tree mystorage 
+    # storage-gen --tree mystorage 
 
 Or the same without messages-- 
 
-    storage-gen --tree --quiet mystorage 
+    # storage-gen --tree --quiet mystorage 
 
 
 
