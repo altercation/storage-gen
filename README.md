@@ -107,7 +107,7 @@ mean :
 
 In this partnum example, the script would prompt interactively for a drive to 
 be selected. We could add this information directly to the template if we 
-wanted to: 
+wanted to : 
 
     drive --devpath /dev/sda 
         filesystem --keep    --partnum 1 --mountpoint /boot 
@@ -156,9 +156,8 @@ about which element goes where. For example :
         subvolume --mountpoint / 
         subvolume --mountpoint /home 
 
-
-
-
+A nice tool is the --tree option that would show you a structured preview of 
+### what your template will create: 
 
 ### Trust but Verify: 
 

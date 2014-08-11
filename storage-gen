@@ -101,7 +101,8 @@ to help the script figure out which partitions we mean :
     filesystem --replace --label root --mountpoint /
     filesystem --keep    --label home --mountpoint /home --encrypt
 
-Another option would have been to specify a partition number :
+Another option would have been to specify a partition number
+:
 
     filesystem --keep    --partnum 1 --mountpoint /boot
     filesystem --replace --partnum 2 --mountpoint /
@@ -109,14 +110,16 @@ Another option would have been to specify a partition number :
 
 In this partnum example, the script would prompt interactively for a
 drive to be selected. We could add this information directly to the
-template if we wanted to:
+template if we wanted to
+:
 
     drive --devpath /dev/sda
         filesystem --keep    --partnum 1 --mountpoint /boot
         filesystem --replace --partnum 2 --mountpoint /
         filesystem --keep    --partnum 3 --mountpoint /home --encrypt
 
-or to each filesystem (and thus the containing parition) :
+or to each filesystem (and thus the containing parition)
+:
 
     filesystem --keep    --devpath /dev/sda1 --mountpoint /boot
     filesystem --replace --devpath /dev/sda2 --mountpoint /
@@ -159,7 +162,8 @@ If you wanted to be lazy about things, the following is equivalent :
         subvolume --mountpoint /
         subvolume --mountpoint /home
 
-
+A nice tool is the --tree option that would show you a structured
+preview of what your template will create:
 
 Trust but Verify:
 
