@@ -31,14 +31,135 @@ To create a configuration script for a typical new Arch Linux system, you
 could use the following commands (these only output text or tree information,
 they do not execute any changes to the system).
 
-    # storage-gen new-typical
-    # storage-gen new-typical --tree
+    # storage-gen new-simple
+    # storage-gen new-simple --tree
 
 If you had an existing system with, for example, a home partition you wanted
 to keep, while erasing everything else and reinstalling the system, you could
 use this:
 
     # storage-gen keep-home --tree
+
+Templates
+
+In the above examples, the `new-typical` and `keep-home` command line
+arguments are names of files in the `templates` subdirectory. You can use
+your own files as well, or even use a remote file as long as `curl` can
+reach it (for example `storage-gen http://myserver.net/myfiles/mytemplate`).
+
+storage-gen templates are intended to be as minimal as possible. They are
+like small text-format outlines, each line of which is a storge element
+which in turn my have certain values associated with it. For example, here
+is a *very* simple template that just formats a drive and makes a filesystem,
+then mounts it under our mountpoint (/mnt by default) for subsequent system
+installation:
+
+    filesystem --mountpoint /
+
+Of course we may want to separate out the root and home partitions, and
+limit the amount of space the root partition uses :
+
+    filesystem --mountpoint / --size 20G
+    filesystem --mountpoint /home
+
+Or create the same thing but using btrfs subvolumes :
+
+    filesystem
+        subvolume --mountpoint /
+        subvolume --mountpoint /home
+
+Here is a variation that makes an encrypted partition for home and
+adds in a swap partition, which will default to the system ram size :
+
+    filesystem --mountpoint / --size 20G
+    filesystem --mountpoint /home --encrypt
+    swap
+
+Here is another similar configuration that tells the system to
+keep the existing home partition untouched and to replace the
+existing system root partition with a new installation :
+
+    filesystem --replace --label root --mountpoint /
+    filesystem --keep    --label home --mountpoint /home --encrypt
+    swap
+
+You can mix in --keep and --replace partitions with the creation of
+new partitions :
+
+    filesystem --keep    --devpath /dev/sda1 --mountpoint /boot
+    filesystem --replace --devpath /dev/sda2 --mountpoint /
+    filesystem --keep    --devpath /dev/sda3 --mountpoint /home --encrypt
+    filesystem --mountpoint /media
+
+The previous examples would have prompted the user to select the
+paritions that we wished to keep or replace. We can pre-select
+partitions on the current system by providing details about the
+partitions (code, size, label). Here we use labels and code values
+to help the script figure out which partitions we mean :
+
+    filesystem --keep    --code ef00  --mountpoint /boot
+    filesystem --replace --label root --mountpoint /
+    filesystem --keep    --label home --mountpoint /home --encrypt
+
+Another option would have been to specify a partition number :
+
+    filesystem --keep    --partnum 1 --mountpoint /boot
+    filesystem --replace --partnum 2 --mountpoint /
+    filesystem --keep    --partnum 3 --mountpoint /home --encrypt
+
+In this partnum example, the script would prompt interactively for a
+drive to be selected. We could add this information directly to the
+template if we wanted to:
+
+    drive --devpath /dev/sda
+        filesystem --keep    --partnum 1 --mountpoint /boot
+        filesystem --replace --partnum 2 --mountpoint /
+        filesystem --keep    --partnum 3 --mountpoint /home --encrypt
+
+or to each filesystem (and thus the containing parition) :
+
+    filesystem --keep    --devpath /dev/sda1 --mountpoint /boot
+    filesystem --replace --devpath /dev/sda2 --mountpoint /
+    filesystem --keep    --devpath /dev/sda3 --mountpoint /home --encrypt
+
+or we cuold have provided this information on the command line:
+
+    storage-gen my-template --drives "/dev/sda,/dev/sdb"
+
+If the pre-specified drives are not valid for installation, the script
+will prompt for other drives to be selected (prudence). If, however,
+you are (for example) running the script on a machine that is not the
+installation target, you might want to ignore the actual system
+environment for the time being:
+
+    storage-gen my-template --drives "/dev/sda,/dev/sdb" --ignore
+
+Finally, if you want the script to then just pick the first available
+drive and skip asking you so many questions, tell it to not query:
+
+    storage-gen my-template --drives "/dev/sda,/dev/sdb" --ignore --noquery
+
+Outline Your Storage:
+
+Storage template files are really just outlines. You can indent (spaces
+OR tabs, not both, and spaces are recommended) in order to provide
+information about which element goes where. For example :
+
+    drive
+        partition --size 200M
+            filesystem --mountpoint /boot --fstype vfat
+        partition
+            filesystem
+                subvolume --mountpoint /
+                subvolume --mountpoint /home
+
+If you wanted to be lazy about things, the following is equivalent :
+
+        filesystem --size 200M --mountpoint /boot --fstype vfat
+        subvolume --mountpoint /
+        subvolume --mountpoint /home
+
+
 
 Trust but Verify:
 
@@ -70,12 +191,12 @@ directory. A storage-gen definition file for this might be:
     filesystem --fstype btrfs --size 30G --mountpoint /
     filesystem --mountpoint /home
 
-If this file was named "mystorage" you could then run storage-gen on it.
+If this file was named "mystorage" you could then run storage-gen on it :
 
     # storage-gen mystorage
 
 And after being asked which of the available drives you wanted to use, the
-following script would be output:
+following script would be output :
 
     #!/usr/bin/env zsh
     sgdisk --zap-all /dev/sda # erase everything!
@@ -90,14 +211,13 @@ following script would be output:
 You could also ask to see a tree style output of the results. This is
 useful while writing storage-definition files so you can confirm the
 results (for example, with an editor in one terminal or virtual console
-and the tree view in another).
+and the tree view in another):
 
     # storage-gen --tree mystorage
 
 Or the same without messages--
 
     # storage-gen --tree --quiet mystorage
-
 
 Resulting in the following for a drive selection of /dev/sda--
 
@@ -125,9 +245,9 @@ takes a comma separated list of drives:
 
 Command Examples:
 
-Note that several of these examples use the example storage definition file
-named 'btrfs_simple'. This is only one example file. See other samples in
-the 'storage' subdirectory, or write your own.
+Note that several of these examples use the example storage template named
+'new-typical'. This is only one example file. See other samples in the
+'templates' subdirectory, or write your own.
 
 Examples: Ways to reference the storage file - normal script output
 
@@ -138,24 +258,22 @@ Examples: Ways to reference the storage file - normal script output
 
 Example: Show a minimal script output, no messages
 
-    storage-gen --commentsoff --quiet btrfs_simple
+    storage-gen --commentsoff --quiet new-typical
 
 Example: Live tree output with 'watch'
 
 This is useful for split screen editing, with the storage definition file
 open in an editor on one side and this live view in another.
 
-    watch -cn1 'storage-gen --tree btrfs_simple'
+    watch -cn1 'storage-gen --tree new-typical'
 
 Example: Save script file and show output together
 
-    storage-gen btrfs_simple --output myinit --script
+    storage-gen new-typical > my-storage-script
 
-Storage Definition File Example:
+or
 
-    drive --devpath /dev/sda
-        partition --noclobber --devpath /dev/sda1 --mountpoint /boot
-        filesystem --fstype btrfs --mountpoint /
+    storage-gen new-typical --output my-storage-script
 
 See the $SCRIPTROOT/storage subdirectory for a list of prepared storage
 definition files and further details on format.
