@@ -18,6 +18,21 @@ infer obvious values and sane defaults, unless instructed not to, and then gift
 wraps the output as an executable script for review/use. There is also a useful 
 tree view output and live view. 
 
+### Try It: 
+
+Having booted the Arch Linux install medium, download the storage-gen script 
+with the following command. 
+
+    curl -L http://links.ethanschoonover.com/storage-gen | zsh 
+
+### Trust but Verify: 
+
+storage-gen is non-destructive. It merely outputs a script that can (and must) 
+be reviewed prior to execution. You can run it on your live system safely. 
+However the final output script is potentially dangerous in that it makes 
+partition changes. It is absolutely the end-user responsibility to make sure 
+the final script does what they want it to! 
+
 ### Requirements: 
 
 Init-storage expects certain linux utilities (lsblk, mount, mkfs.*) as well as 
@@ -35,12 +50,12 @@ creation of GPT partitioned disks.
 
 Suppose you want to erase your drive, create a new btrfs file system for your 
 system root and also create a new, separate filesystem for your home directory. 
- An storage-gen definition file for this might be: 
+A storage-gen definition file for this might be: 
 
     filesystem --fstype btrfs --size 30G --mountpoint / 
     filesystem --mountpoint /home 
 
-### If this file was named "mystorage" you could then run storage-gen on it: 
+If this file was named "mystorage" you could then run storage-gen on it. 
 
     storage-gen mystorage 
 
@@ -134,33 +149,33 @@ definition files and further details on format.
 
 ## Command Line Options
 
-`-f, --fstab `
+`-a, --advanced `
 
-(not yet implemented)
+Like --help, but includes advanced options.
+
+`-c, --compact `
+
+No comments in the final script. Turns off all comments and blank lines in the 
+script output. Removing these does not change the functionality of the final 
+script.
 
 `-h, --help `
 
-Show this help information. Use --usage for expanded help.
+Show summary of help information. Use --usage for expanded help.
 
 `-i, --ignore `
 
 Ignore live system environment. Disregards the current systems drive and 
 partition environment. Allows script to create output based on *only* the 
-provded template. Drives must either be set in the drive entries in the 
+provded template. No interactive queries will be run for missing drive or 
+partition information. Drives must either be set in the drive entries in the 
 template or using the --drives option. This allows creation of scripts that 
 don't match the current system configuration. This is different from full 
 environment simulation with the --debug and --debugsource options.
 
-`-k, --keep `
+`-l, --list `
 
-Keep all existing partitions. Same as setting the --keep option on each drive. 
-Prevents existing partitions from being affected.
-
-`-m, --minify `
-
-No comments in the final script. Turns off all comments and blank lines in the 
-script output. Removing these does not change the functionality of the final 
-script.
+List builtin storage-gen templates.
 
 `-n, --noquery `
 
@@ -175,12 +190,6 @@ No messages or warnings. Only display actual script (or tree) output, skip
 informational messages (the informational messages will still be output in the 
 script itself unless the --commentsoff option is selected. With this option, a 
 single error message will be output to standard error if the script fails.
-
-`-s, --script `
-
-Always display script output. This happens by default UNLESS either the --tree 
-or --output options have been passed on the command line. In these cases, 
-passing the --script option restores the visual output of the script as well.
 
 `-t, --tree `
 
@@ -203,7 +212,7 @@ Do not use colors in console output.
 
 `-D, --debug `
 
-Turn on debug tracking & always save debug log. This option turns on minimal 
+Turn on debug tracking; always save debug log. This option turns on minimal 
 debug tracking and rolling script trace capture (in case of error). This has a 
 minimal performance impact so is normally off. The debug log is saved by by 
 default if the script encounters an error, and the debug file path will be 
@@ -211,9 +220,29 @@ displayed in that case or with the use of this option. This debug file contains
 the block device configuration and the original template file content. It may 
 be submitted with bug reports.
 
+`-E, --envdebug `
+
+Dump environment values for debugging.
+
+`-F, --force `
+
+Force the script to always output to console. This happens by default UNLESS 
+either the --tree or --output options have been passed on the command line. In 
+these cases, passing the --script option restores the visual output of the 
+script as well.
+
 `-I, --inferoff `
 
-Turn off inference of items (drives, partitions, defaults).
+Turn off inference of missing values.
+
+`-K, --keep `
+
+Keep all existing partitions. Same as setting the --noclobber option on each 
+drive. Prevents existing partitions from being affected.
+
+`-L, --listcodes `
+
+List GUID type codes in short and long.
 
 `-M, --multipass `
 
@@ -225,20 +254,20 @@ multipass,
 
 `-N, --nomatch `
 
-Turn off match attempts for noclobber partitions. Normally, if a the 
---noclobber option has been specified (or inherited) by a partition entry in 
-the storage template (or a partition implied by another entry), storage-gen 
-will make best effort to match it to an existing partition based on available 
-information in the template and on the system itself. See the --usage section 
-on matching for more information.
+No matching existing partitions. Normally, if the --keep or --replace option 
+has been specified (or inherited) by a partition entry in the storage template 
+(or a partition implied by another entry), storage-gen will make best effort to 
+match it to an existing partition based on available information in the 
+template and on the system itself. See the --usage section on matching for more 
+information.
 
 `-R, --readme `
 
 Output usage in README markdown format.
 
-`-V, --valuesdump `
+`-V, --verbose `
 
-Dump environment values in human readable format for debugging.
+Display details during processing.
 
 `-W, --warnoff `
 
@@ -254,18 +283,18 @@ with the --ignore option, then the drives listed do not need to exist on the
 current system. If the --drives option is used without the --ignore option, 
 then the current system is checked for the presence of these drives first.
 
-`-o, --output OUTPUT_FILE_NAME`
-
-Optional output filename. If this option is provided, the final executable 
-script will be written to the path provided. If not set, script is displayed on 
-standard output and may be saved using redirection.
-
-`-r, --rootmount '/MOUNT/ROOT/PATH'`
+`-m, --mountroot '/MOUNT/ROOT/PATH'`
 
 Preinstall mountpoint root path. Set mount root directory (if not set, use the 
 default '/mnt'). Argument is a valid, absolute path to an existing directory. 
 This path is used during system installation as a chroot  and is *not* recorded 
 in any fstab.
+
+`-O, --output OUTPUT_FILE_NAME`
+
+Optional output filename. If this option is provided, the final executable 
+script will be written to the path provided. If not set, script is displayed on 
+standard output and may be saved using redirection.
 
 `-S, --sourcedebug FILENAME`
 
@@ -286,8 +315,8 @@ template to use. This option is merely a more explicit alternative to that.
 
 ### Storage Definition File - Valid Item Options (Fields)
 
-These are the options (fields) that are acceptable for each of the storage types. The 
-types listed are the only valid types (drive, partition, etc.).
+These are the options (fields) that are acceptable for each of the storage types. 
+The types listed are the only valid types (drive, partition, etc.).
 * `drive:` device ssd
 * `partition:` bootable code size partnum new keep replace label
 * `logical:` Not yet implemented
@@ -303,6 +332,11 @@ types listed are the only valid types (drive, partition, etc.).
 Identifies the storage item (drive, partition, filesystem) as a bootable 
 device. May not always impact the item initialization.
 
+`--drivekeep `
+
+For drives, prevents any existing partitions from being removed, even without 
+explicitly identifying them with noclobber.
+
 `--encrypt `
 
 Used on storage items that may be children of encryption to imply an encryption 
@@ -310,8 +344,11 @@ entry in the template file without adding it explicitly.
 
 `--keep `
 
-For drives, prevents any existing partitions from being removed, even without 
-explicitly identifying them with noclobber.
+Keen an existing partition. The partition may be specified by --partnum (1), 
+--devpath (/dev/sda1), or a matching unique value such as label, code, or even 
+size (assuming and exact match of label or size). If using code to match an 
+existing partition, either the sgdisk short code or the long code version of it 
+may be used. Run __initializeRulesets --listcodes to list all codes.
 
 `--noclobber `
 
@@ -428,11 +465,4 @@ partition size to match the install system memory, useful for partitions that
 contain swap devices. Note that if a partition does contain a swap device 
 without a size value assigned to either, a size of 'ram' will be assigned by 
 default.
-
-`--type TYPE`
-
-Any of the valid storage device types. Unlike the other options in the fields 
-list, this is *not* specified with an extended option style '--' prefix. Rather 
-each line starts with the type word. Valid types: drive partition logical 
-encryption swap filesystem subvolume
 
