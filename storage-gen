@@ -759,6 +759,7 @@ TRAPEXIT () { (( $status > 0 )) && DEBUG=true; trapcleanup; }
 TRAPZERR () {
     teelog --category UNHANDLED_ERROR --color red "$(print -l -- ${ROLLING:-})"
     DEBUG=true; trapcleanup
+    debugDump
     print "\n${COLOR[red]:-}Exit due to unhandled error." 1>&2; }
 trapcleanup  () {
     [[ -z ${ROLLCALL:-} ]] || print -l -- "# "${^ROLLCALL} >> ${DEBUGLOG:-/dev/null}
@@ -2054,39 +2055,15 @@ __inflateStructure () {
             typeset lineage make_new_record_test move_field_test
             for lineage in ancestors descendants
             do
-                if [[ $lineage == ancestors ]]
-                then
-                    # MOVE PARENT RECORD STUFF HERE
-                    typeset make_new_record_test=isNullOrAncestorType 
-                    typeset move_field_test=isSameOrDescendantType 
-                    typeset valid_lineage_types=$valid_ancestor_types
-                    typeset relative_list=$record_parent_index
-                    typeset relation=parent
-                    #typeset new_relative_index=$record_index
-                    typeset -a new_relative_index_e
-                    new_relative_index_e=('$record_index')
-                    typeset -a new_relative_cmd_e
-                    new_relative_cmd_e=('insertParent')
-                elif [[ $lineage == descendants ]]
-                then
-                    # SO WE CAN ADD CHILD STUFF HERE
-                    # AND LOOP OVER CHILD RECORDS
-                    typeset make_new_record_test=isNullOrDescendantType 
-                    typeset move_field_test=isSameOrAncestorType 
-                    typeset valid_lineage_types=$valid_descendant_types
-                    typeset relative_list=$record_children_indexes
-                    typeset relation=child
-                    #typeset new_relative_index=$record_index,1
-                    typeset -a new_relative_index_e
-                    new_relative_index_e=(
-                    '${relative_index:-$record_index,1}')
-                    typeset -a new_relative_cmd_e
-                    new_relative_cmd_e=(
-                    '${${relative_index:+insertParent}'
-                    ':-${relative_index:-insertSibling}}')
-                fi
+
                 # find the "rightful owner" types of fields which should be
                 # moved elsewhere
+
+                [[ $lineage == ancestors ]] && {
+                    typeset valid_lineage_types=$valid_ancestor_types }
+                [[ $lineage == descendants ]] && {
+                    typeset valid_lineage_types=$valid_descendant_types }
+
                 for rightful_owner_type in ${=valid_lineage_types}
                 do
                     # no "common" valid array fields, since those are
@@ -2122,6 +2099,12 @@ __inflateStructure () {
                         # null value if the list is otherwise empty
                         #for relative_index in ${=relative_list:-""}
                         # NOW: adding a null value always
+
+                        [[ $lineage == ancestors ]] && {
+                            typeset relative_list=$record_parent_index }
+                        [[ $lineage == descendants ]] && {
+                            typeset relative_list=$record_children_indexes }
+
                         for relative_index in ${=relative_list:-} ''
                         do
                             typeset relative_type=""
@@ -2129,11 +2112,20 @@ __inflateStructure () {
                                 getTypeByIndex \
                                     --index $relative_index \
                                     --result relative_type    }
-                            # CAN WE MOVE TO EXISTING?
-                            #
-                            # move value to EXISTING parent/child
-                            # (will bubble sort to proper parent/child or
-                            # eventually make a new record)
+
+                            # Move Field
+                            # -----------------------------------------------
+                            # Try to move the invalid_field to an existing
+                            # parent or child, or move it to an invalid parent
+                            # or child that can then pass it onwards to the
+                            # final legitimate record (either existing or to
+                            # be created).
+
+                            [[ $lineage == ancestors ]] && {
+                                typeset move_field_test=isSameOrDescendantType }
+                            [[ $lineage == descendants ]] && {
+                                typeset move_field_test=isSameOrAncestorType }
+
                             if $move_field_test \
                                 "${relative_type:-}" \
                                 $rightful_owner_type
@@ -2169,25 +2161,48 @@ __inflateStructure () {
                                             be removed)"
                                 return 1
                             fi
-                            # CAN WE MAKE?
-                            #
+
+                            # Make Record For Field
+                            # -----------------------------------------------
                             # if there is no parent/child or the current
                             # parent/child is a valid ancestor/descendant of the
                             # potential new record type (to be inserted between
                             # the current record and its current parent/child)
-                            # then make a new parent
-                            typeset new_relative_index new_relative_cmd
-                            eval new_relative_index=${(j::)new_relative_index_e}
-                            eval new_relative_cmd=${(j::)new_relative_cmd_e}
-                            # child (depending on current ancestor/descendant
-                            # loop) new_relative_index is only used in this test
+                            # then make a new parent or child (depending on
+                            # current ancestor/descendant loop)
+                            # the 'new_relative_index' is only used in this test
                             # for ancestor lineage test
+                            typeset \
+                                new_relative_index \
+                                new_relative_cmd \
+                                make_new_record_test=isNullOrDescendantType
+                            if [[ $lineage == ancestors ]]
+                            then
+                                typeset make_new_record_test=isNullOrAncestorType
+                                new_relative_index=$record_index
+                                new_relative_cmd=insertParent
+                            elif [[ $lineage == descendants ]]
+                            then
+                                typeset make_new_record_test=isNullOrDescendantType
+                                new_relative_index=${relative_index:-$record_index,1}
+                                if [[ -n ${relative_index:-} ]]
+                                then
+                                    new_relative_cmd=insertParent
+                                else
+                                    #new_relative_cmd=insertParent #insertSibling
+                                    new_relative_cmd=insertSibling
+                                fi
+                            fi
                             if $make_new_record_test \
                                 "${relative_type:-}" \
                                 $rightful_owner_type \
                                 $new_relative_index
                             then
-                                $new_relative_cmd \
+                            print new_relative_cmd $new_relative_cmd \
+                                    --type $rightful_owner_type \
+                                    --array $storage_array \
+                                    --index $new_relative_index
+                            $new_relative_cmd \
                                     --type $rightful_owner_type \
                                     --array $storage_array \
                                     --index $new_relative_index || {
@@ -2195,6 +2210,12 @@ __inflateStructure () {
                                               $rightful_owner_type\nindex:
                                               $new_relative_index" }
                                 tagByIndex --index $new_relative_index
+
+                                [[ $lineage == ancestors ]] && {
+                                    typeset relation=parent }
+                                [[ $lineage == descendants ]] && {
+                                    typeset relation=child }
+
                                 noteByIndex \
                                     --array $storage_array \
                                     --index $new_relative_index \
@@ -4030,7 +4051,7 @@ insertSibling () {
     . <(localopts array: index: type:)
     array=${array:-STORAGE} # be good, though, and use option
     index=${index:-${ACTIVE[index]:-}}
-    [[ -n ${type:-} ]] && fail "type missing in call to $0"
+    [[ -z ${type:-} ]] && fail "type missing in call to $0"
     insertGapNoIndentSiblings \
         --array $array --insertion_point $index 
     eval $array'[$index,type]=$type'
@@ -4070,20 +4091,27 @@ insertGapNoIndentSiblings () {
     '%%,type}'          '# and trim the ,type part off'
     '[1]}'              '# take first of (reverse sorted) sibling indexes'
     )
-    max_sib_id=${(ej..)e:#\#*} 
     ip_sib_id=${(M)insertion_point%%[0-9]##}
     ip_head=${insertion_point%%[0-9]##}
-    sibs=(${ip_head}{$max_sib_id..$ip_sib_id})
-    for sib_index in $sibs
-    do
-        new_sib_index=${sib_index//(#b)([0-9]##)(#e)/$(($match+1))}
-        for index in ${(P)${:-${input_array}[(I)$sib_index,*]}}
+    sibscheck=${STORAGE[(I)ip_head,[0-9]##,type]}    
+    if [[ -n ${sibscheck} ]]
+    then
+        max_sib_id=${(ej..)e:#\#*} 
+        sibs=(${ip_head}{$max_sib_id..$ip_sib_id})
+        for sib_index in $sibs
         do
-            new_index=$new_sib_index${index##$sib_index}
-            eval $input_array'[$new_index]=${(P)${:-${input_array}[$index]}}'
-            unset "${input_array}[$index]"
+            new_sib_index=${sib_index//(#b)([0-9]##)(#e)/$(($match+1))}
+            for index in ${(P)${:-${input_array}[(I)$sib_index,*]}}
+            do
+                new_index=$new_sib_index${index##$sib_index}
+                eval $input_array'[$new_index]=${(P)${:-${input_array}[$index]}}'
+                unset "${input_array}[$index]"
+            done
         done
-    done
+    else
+        # return if there were no siblings
+        return 0
+    fi
 }
 
 insertGapIndentSingleBranch () {
