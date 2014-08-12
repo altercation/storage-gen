@@ -42,6 +42,27 @@ this
 
     # storage-gen keep-home --tree 
 
+Wait, it does what? 
+
+This 
+
+    # storage-gen new-simple --tree 
+
+outputs this 
+
+    ...INSERT TREE HERE... 
+
+while this (no tree) 
+
+    # storage-gen new-simple 
+
+outputs something like this (some comments removed... remove them all with 
+--compact) 
+
+    ...INSERT SCRIPT HERE... 
+
+
+
 ### Templates: 
 
 In the above examples, the `new-typical` and `keep-home` command line arguments 
@@ -128,7 +149,7 @@ or to each filesystem (and thus the containing parition)
     filesystem --replace --devpath /dev/sda2 --mountpoint / 
     filesystem --keep    --devpath /dev/sda3 --mountpoint /home --encrypt 
 
-or we cuold have provided this information on the command line 
+or we could have provided this information on the command line 
 
     storage-gen my-template --drives "/dev/sda,/dev/sdb" 
 
@@ -197,12 +218,12 @@ A storage-gen definition file for this might be:
     filesystem --fstype btrfs --size 30G --mountpoint / 
     filesystem --mountpoint /home 
 
-### If this file was named "mystorage" you could then run storage-gen on it : 
+If this file was named "mystorage" you could then run storage-gen on it 
 
     # storage-gen mystorage 
 
 And after being asked which of the available drives you wanted to use, the 
-following script would be output : 
+following script would be output 
 
     #!/usr/bin/env zsh 
     sgdisk --zap-all /dev/sda # erase everything! 
@@ -453,8 +474,8 @@ template to use. This option is merely a more explicit alternative to that.
 
 ### Storage Definition File - Valid Item Options (Fields)
 
-These are the options (fields) that are acceptable for each of the storage types. 
-The types listed are the only valid types (drive, partition, etc.).
+These are the options (fields) that are acceptable for each of the storage types. The 
+types listed are the only valid types (drive, partition, etc.).
 * `drive:` device ssd
 * `partition:` bootable code size partnum new keep replace label
 * `logical:` Not yet implemented

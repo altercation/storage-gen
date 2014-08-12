@@ -147,7 +147,7 @@ or to each filesystem (and thus the containing parition)
     filesystem --replace --devpath /dev/sda2 --mountpoint /
     filesystem --keep    --devpath /dev/sda3 --mountpoint /home --encrypt
 
-or we cuold have provided this information on the command line
+or we could have provided this information on the command line
 
     storage-gen my-template --drives "/dev/sda,/dev/sdb"
 
