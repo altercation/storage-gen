@@ -42,6 +42,25 @@ use this
 
     # storage-gen keep-home --tree
 
+Wait, it does what?
+
+This
+
+    # storage-gen new-simple --tree
+
+outputs this
+
+    ...INSERT TREE HERE...
+
+while this (no tree)
+
+    # storage-gen new-simple
+
+outputs something like this (some comments removed... remove them all with --compact)
+
+    ...INSERT SCRIPT HERE...
+
+
 Templates:
 
 In the above examples, the `new-typical` and `keep-home` command line
@@ -199,12 +218,12 @@ directory. A storage-gen definition file for this might be:
     filesystem --fstype btrfs --size 30G --mountpoint /
     filesystem --mountpoint /home
 
-If this file was named "mystorage" you could then run storage-gen on it :
+If this file was named "mystorage" you could then run storage-gen on it
 
     # storage-gen mystorage
 
 And after being asked which of the available drives you wanted to use, the
-following script would be output :
+following script would be output
 
     #!/usr/bin/env zsh
     sgdisk --zap-all /dev/sda # erase everything!
@@ -431,9 +450,9 @@ __MAIN () {
         --input_filename    INPUTFILE   \
         --input_filepath    SOURCEFILE
 
-    ((   $TREE          \
-    ||   $ENVDEBUG )  \
-    && ! $FORCE ) ||   {
+    ((   ${TREE:-false}                 \
+    ||   ${ENVDEBUG:-false} )           \
+    && ! ${FORCE:-false}    ) ||        {
     track __payloadPrint                \
         --input_array       PAYLOAD     \
         --comments_option   MINIFY      }
@@ -3098,7 +3117,7 @@ __printTree () {
     typeset i=${(l.$indent...):-}
     typeset ii="$i$i"
 
-    typeset columns=$(($COLUMNS+5)) # wrap columns
+    typeset columns=$(($COLUMNS)) # wrap columns
     typeset width=$indent # tree line width
     typeset gap=0   # gap for readability
 
@@ -3163,7 +3182,7 @@ __printTree () {
             # print continuation line if not initial line
             [[ $record != 1 ]] && print "$ii$x${leader:-}$m"
 
-            typeset -a e_linebuilder e_colorcoder
+            typeset -a e_linebuilder
             e_linebuilder=(
             '${line1}'
             '${line2}'
@@ -3181,6 +3200,7 @@ __printTree () {
                     '${(q-)ACTIVE[${match}]:-}}' '# so booleans output clean'
             '}'
             )
+            typeset -a e_colorcoder
             e_colorcoder=(
             '${line_head'
             '//(#b)(#s)'
@@ -3197,9 +3217,9 @@ __printTree () {
             typeset type=${ACTIVE[type]}
             unset "ACTIVE[index]"   \
                   "ACTIVE[auto]"    \
-                  "ACTIVE[type]"    \
                   "ACTIVE[inferred]"\
-                  "ACTIVE[warn]"
+                  "ACTIVE[notes]"   \
+                  "ACTIVE[type]"
 
 
             # add all keys
@@ -3219,12 +3239,12 @@ __printTree () {
                 line="${ii}$x${leader:-}${add}$c${(l.$((${#type}-$width-1))...):-}$line"
                 }
 
-
                 # wrap off the current item value, then take the first line
-                getWrapped --width $columns --head line_head $line
+                wrapped=(${(f)${:-"$(print ${line} | fold -s -w $columns)"}})
+                line_head=${wrapped[1]}
 
                 # trim the remainder
-                line=${line[$((${#line_head}+1)),-1]## #}
+                line="${(p)${line[$((${#line_head}+1)),-1]## #}//\\n/}"
 
                 # add highlight colors if first line
                 $firstline && {
@@ -4681,17 +4701,6 @@ hangingIndent () {
     [[ -z $wrapped ]] && ${linespacing:-false} && print || :
     [[ -z $wrapped ]] ||
         print -l -- "${(l.$(($margin+$indent))...):-}"${^wrapped}${linespacing+\\n}
-}
-getWrapped () {
-    # given a line, return the maximum value given wrapped words
-    # optionally return head and tail values to named parameters
-    . <(localopts width: text: head: tail:)
-    text=${text:-$1}
-    width=${width:-$COLUMNS}
-    wrapped=(${(f)${:-"$(print ${(e)text} | fold -s -w $width)"}})
-    [[ -n ${head:-} ]] && eval $head'=${wrapped[1]}'
-    [[ -n ${tail:-} ]] && eval $tail'=$wrapped[2,-1]'
-    [[ -z ${head:-}${tail:-} ]] && print -l -- $wrapped
 }
 debugDump () {
     . <(localopts array:)
