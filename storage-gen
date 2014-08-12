@@ -256,18 +256,19 @@ preview of what your template will create
 Trust but Verify:
 
 storage-gen is non-destructive. It merely outputs a script that can (and
-must) be reviewed prior to execution. You can run it on your live
+must) be reviewed prior to execution. You can run storage-gen on a live
 system safely. However the final output script is potentially dangerous
-in that it makes partition changes. It is absolutely your own 
-responsibility to make sure the final script does what you want it to!
+in that it makes partition changes. It is absolutely your own responsibility
+to make sure the final script does what you want it to!
 
 Requirements:
 
 Init-storage expects certain linux utilities (lsblk, mount, mkfs.*) as well
-as zsh. Why zsh? Init-storage was written primarily for use on new Arch Linux
-installations, and zsh is the default shell on the Arch install medium. Zsh
-is also a capable and well documented scripting language, albeit it one prone
-to hieroglyphic like parameter expansions.
+as zsh. An aside: Why zsh? Init-storage was written primarily for use on new
+Arch Linux installations, and zsh is the default shell on the Arch install
+medium. Zsh is a capable and well documented scripting language, albeit
+it one prone to hieroglyphic like parameter expansions. Regardless, something
+of this scope may be best rewritten in another language.
 
 Intended Systems:
 
@@ -369,6 +370,18 @@ or
 
 See the $SCRIPTROOT/storage subdirectory for a list of prepared storage
 definition files and further details on format.
+
+## Existing Partitions
+
+You may wish to keep an existing partition (and whatever it contains) as it is.
+For example, you might have an existing filesystem that you want to mount under
+/home. To do this, just add the --keep option
+
+    filesystem --mountpoint /home --keep
+
+
+
+
 ------------------------------------------------------------------------------)
 
 :<< \
@@ -467,15 +480,15 @@ __MAIN () {
         --siblings_array    SIBLINGS    \
         --valid_array       VALID
 
-#    track __validateStructures          \
-#        --children_array    CHILDREN    \
-#        --required_array    REQUIRED    \
-#        --siblings_array    SIBLINGS    \
-#        --input_array       STORAGE     \
-#        --valid_array       VALID
-#
-#    track __reorderPartitions           \
-#        --input_array       STORAGE 
+    track __validateStructures          \
+        --children_array    CHILDREN    \
+        --required_array    REQUIRED    \
+        --siblings_array    SIBLINGS    \
+        --input_array       STORAGE     \
+        --valid_array       VALID
+
+    track __reorderPartitions           \
+        --input_array       STORAGE 
 
     track __identifyDrives              \
         --drives_array      DRIVES      \
@@ -496,12 +509,6 @@ __MAIN () {
         --input_array       STORAGE     \
         --blockenv_array    BLOCKENV 
 
-track __printTree                   \
-    --input_array       STORAGE     \
-    --tree_option       TREE        \
-    --input_filename    INPUTFILE   \
-    --input_filepath    SOURCEFILE
-exit
     track __identifyOtherDevicePaths    \
         --input_array       STORAGE
 
@@ -533,7 +540,6 @@ __assumeValues () {
     . <(localopts \
         storage_array: \
         fields_array: \
-        inherit_array: \
         valid_array: \
         infer_off_option:
         )
@@ -627,7 +633,7 @@ assumePartitionValues () {
     if [[ ${ACTIVE[type]:-} == partition ]]
     then
         # missing size and is NOT noclobber
-        if [[ -z ${ACTIVE[size]:-} ]] && ${${ACTIVE[noclobber]+false}-true}
+        if ( ! activeIsSet size ) && ( ! activeIsNoclobber )
         then
 
             typeset dsizekey dsize dtype
@@ -683,8 +689,6 @@ assumePartitionValues () {
             # check for conditition of all existing peers
             else
 
-                typeset sib all_sibs_pass=true
-
                 # a noclobber sibling is assumed to have a size
                 # (we don't need to know it since we won't be
                 # creating the partition), so we check here for
@@ -692,22 +696,24 @@ assumePartitionValues () {
                 # have at least one of these values then we can
                 # safely assume this single partition that is
                 # missing a value is a max size partition
-                for sib in $sibs
-                do
-                    # TODO: if I change noclobber checks to
-                    # be a function rather than preset parameter
-                    # lookup, then this will also change
-                    if ( ! isSet "${storage_array}[$sib,noclobber]" ) || 
-                       ( ! isSet "${storage_array}[$sib,size]" )
-                    then
-                    else
-                        # sibling item without noclobber or size found
-                        all_sibs_pass=false
-                        break
-                    fi
-                done
-
-                if $all_sibs_pass
+                sibsAreAllFixedSize () {
+                    for sib in $sibs
+                    do
+                        # is this sibling missing both size & noclobber fields?
+                        if isSet "${storage_array}[$sib,size]" ||
+                           indexIsNoclobber $sib
+                        then
+                            # sibling has either a noclobber field or size
+                            continue
+                        else
+                            # sibling item without noclobber or size found
+                            print "found $sib"
+                            return 1
+                        fi
+                    done
+                    return 0
+                }
+                if sibsAreAllFixedSize
                 then
                     setActive size max
                     unsetActive warn
@@ -718,6 +724,8 @@ assumePartitionValues () {
                                 space on drive as all other partitions are
                                 either either fixed size or are noclobber"
                     return 1
+                else
+                    print "siblings of $ACTIVE[index] are NOT of all fixed size"
                 fi
 
                 # any other future all-sibling checks go here
@@ -725,7 +733,9 @@ assumePartitionValues () {
                 # we drop out of this loop here with an implicit
                 # return 0 as we've now done our best to infer
                 # partition values
-                warn "Unable to infer a size value for partition $record"
+                warn "Unable to infer a size value for partition with internal
+                index: $ACTIVE[index]. This may end up being fatal if we can't
+                resolve it on subsequent passes."
 
             fi
 
@@ -751,8 +761,9 @@ this is the only section within same scope as the preload, everything else
 should be a function
 ------------------------------------------------------------------------------
 
-setopt ERR_RETURN ERR_EXIT NO_UNSET GLOBAL_EXPORT EXTENDED_GLOB NULL_GLOB \
+setopt NO_ERR_RETURN ERR_EXIT NO_UNSET GLOBAL_EXPORT EXTENDED_GLOB NULL_GLOB \
        DEBUG_BEFORE_CMD TYPESET_SILENT #WARN_CREATE_GLOBAL
+setopt NO_CONTINUE_ON_ERROR
        #TODO - clean up script using WARN_CREATE_GLOBAL
 
 zmodload zsh/regex zsh/zutil
@@ -762,7 +773,7 @@ SCRIPTROOT="${SCRIPTPATH:h}"
 SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
 
 TRAPEXIT () { (( $status > 0 )) && DEBUG=true; trapcleanup; }
-TRAPZERR () {
+TRAPERR () {
     teelog --category UNHANDLED_ERROR --color red "$(print -l -- ${ROLLING:-})"
     DEBUG=true; trapcleanup
     debugDump
@@ -773,7 +784,13 @@ trapcleanup  () {
     ${DEBUG:-false} && ${${DEBUGLOG:+true}:-false} && { mv $DEBUGLOG $DEBUGLOG_SAVE;
     print "\n${COLOR[red]:-}Debug log saved to $DEBUGLOG_SAVE" 1>&2; } || :
     [[ -d "${SCRIPTTEMP:-}" ]] && rm -rf "$SCRIPTTEMP"; }
-
+command_not_found_handler () {
+    # ugly. if a command is not found in a function being used by an
+    # conditional (or at least certainly in an if... block) I can't
+    # identify the correct method of forcing a full exit, not just returning
+    # an error code.
+    print "$1 - Command not found" 1>&2; kill 0
+}
 
 :<< \
 ------------------------------------------------------------------------------
@@ -1143,7 +1160,7 @@ __initializeRulesets () {
 
     typeset -Ag FIELDS VALID VALUES CHILDREN SIBLINGS OPTIONS REQUIRED \
         ITEMOPTIONS_BOOL ITEMOPTIONS_SCAL DESCRIPTION PRESET CODES INHERIT \
-        CONFLICTS EQUIVALENTS ANCESTORS DESCENDANTS
+        CONFLICTS EQUIVALENTS ANCESTORS DESCENDANTS NOCLOBBER
 
     # the types of storage devices we know about
     # ORDER IS IMPORTANT. Items to the left are *potential* ancestors of items
@@ -1202,6 +1219,7 @@ __initializeRulesets () {
     # inheritance retains the value on the source record (if it is valid)
     # else it claims it from the source. this is only attempted if the
     # field is valid for the record in question.
+    # TODO: should not need this now
     INHERIT=(
     up          "ssd bootable replace keep"
     down        "ssd keep"
@@ -1209,8 +1227,15 @@ __initializeRulesets () {
     )
 
     # values that are invalid on the same entry
+    # TODO: implement in validity checks
     CONFLICTS=(
     keep        "replace"
+    )
+
+    # values which indicate a noclobber element
+    # (partitions to retain or replace in situ)
+    NOCLOBBER=(
+    partition   "keep replace"
     )
 
     # the valid child device types for a given device type
@@ -1864,7 +1889,6 @@ __inflateStructure () {
         ancestors_array:    \
         descendants_array:  \
         equivalents_array:  \
-        inherit_array:      \
         valid_array:        )
     isTypeValidForLineage () {
         # is $check the same type as, or a valid relative type of $against?
@@ -2370,7 +2394,7 @@ __validateStructures () {
         done
 
         # check that all required fields for this type exist
-        if ! activeIsSet noclobber; then
+        if ! activeIsNoclobber; then
             for field in ${(P)=${:-${required_array}[${ACTIVE[type]}]}:-}
             do
                 valueInList \
@@ -2385,7 +2409,7 @@ __validateStructures () {
         # can make it. otherwise no fstype is required as we're just going
         # to mount and can at least give it a go without fstype
         if [[ ${ACTIVE[type]} == filesystem && -z ${ACTIVE[fstype]:-} ]] \
-            && ! activeIsSet noclobber; then
+            && ! activeIsNoclobber; then
 
             fail "Filesystem is missing --fstype option. This would be ok
                     if the filesystem had the --noclobber option (for an
@@ -2397,7 +2421,7 @@ __validateStructures () {
 
         # every partition that is !noclobber must have a size at this point
         if [[ ${ACTIVE[type]} == partition && -z ${ACTIVE[size]:-} ]] \
-            && ! activeIsSet noclobber; then
+            && ! activeIsNoclobber; then
 
             fail "Partition is missing --size option. This would be ok if
                     the partition had the --noclobber option (for an
@@ -2411,7 +2435,7 @@ __validateStructures () {
         if [[ ${ACTIVE[type]} == partition \
             && -z ${ACTIVE[devpath]:-} \
             && -z ${ACTIVE[partnum]:-} ]] \
-            && activeIsSet noclobber; then
+            && { activeIsNoclobber }; then
 
             alert "Noclobber partition entry ${record##*,} under drive
             ${record%%,*} has no --devpath or --partnum; will try to match
@@ -2421,7 +2445,7 @@ __validateStructures () {
         fi
 
         # validate size field value
-        if [[ -n ${ACTIVE[size]:-} ]] && ! activeIsSet noclobber
+        if [[ -n ${ACTIVE[size]:-} ]] && ! activeIsNoclobber
         then
 
             if ! [[ ${(U)ACTIVE[size]} =~ ^([0-9]*[KMGTP%]|RAM|MAX)$ ]]
@@ -2774,29 +2798,51 @@ __identifyExistingPartitions () {
 
     # helper functions
     matchTypeValue () {
-        . <(localopts array_value_name: active_value: result: nummatches:)
+        . <(localopts array_value_name: active_value: result: nummatches: matchedval:)
         typeset -A filtered; typeset -a matched
-        : ${(AA)filtered::=${(PkvL)${:-${blockenv_array}[(I)(${(~j:|:)all_parts}),$array_value_name]}}}
-        matched=(${(kL)filtered[(R)${(L)active_value}]%,$array_value_name})
-        (( ${(P)nummatches::=${#matched}} == 1 )) && eval $result'="$matched"'
+        #: ${(AA)filtered::=${(PkvL)${:-${blockenv_array}[(I)(${(~j:|:)all_parts}),$array_value_name]}}}
+        : ${(AA)filtered::=${(Pkv)${:-${blockenv_array}[(I)(${(~j:|:)all_parts}),$array_value_name]}}}
+        matched=(${(k)filtered[(R)(#i)${active_value}]%,$array_value_name})
+        (( ${(P)nummatches::=${#matched}} == 1 )) && {
+            eval $result'="${(L)matched}"'
+            typeset mv="${(P)${:-${blockenv_array}[$matched,$array_value_name]}}"
+            [[ -n ${matchedval} ]] && {
+                eval $matchedval'="$mv"'
+            }
+        }
     }
     isExistingPartition () {
         typeset matched; [[ -n ${(L)all_parts[(R)${(L)1:-}]:-} ]]
     }
     queryUsePartitionMatchedWith () {
-        report "\nPartition ${record##*,} under drive $drivepath has --noclobber
-        set${ACTIVE[noclobber]:+ through inheritance}. An existing partition with a
-        matching $2 value (${ACTIVE[$2]}) has been found:"
-        print -n "\nMATCH: $1 " 1>&2
+        . <(localopts match_part: match_with_field:)
+
+        # only using id for failure report
+        typeset id=$ACTIVE[index] field msg=""
+        for field in ${=NOCLOBBER[partition]};
+        do
+            activeIsSet $field && { msg="$field"; break }
+        done
+
+        [[ -n $msg ]] || { debugDump; fail "$0 should have found a noclobber
+        field (one of ${:-'${^=NOCLOBBER[partition]}'}) in partition
+        $id." }
+
+        report "\nPartition ${record##*,} under drive $drivepath is designated an
+        existing partition by the --$msg field. An existing partition with a
+        matching $match_with_field value (${ACTIVE[$match_with_field]}) has been found:"
+
+        print -n "\nMATCH: $match_part " 1>&2
+
         typeset f v
-        print -n "/ "${(Pv)^${:-${blockenv_array}[(I)$1,(label|partlabel|size|code)]}} 1>&2
+        print -n "/ "${(Pv)^${:-${blockenv_array}[(I)$match_part,(label|partlabel|size|code)]}} 1>&2
         print
-        report "If you don't want to see this query and want to ensure the
-        noclobber partition uses this (or another) specific existing partition,
-        add a --partnum or --devpath entry to this item in your storage
+        report "If you don't want to see this query and want to ensure this
+        partition entry in the template uses this (or another) specific existing
+        partition, add a --partnum or --devpath entry to this item in your storage
         template. For example, for this partition:
-        '--partnum ${(M)matchpart%%[0-9]#}' (--partnum will take the rest of the
-        path from its parent drive), or '--devpath ${matchpart}'"
+        '--partnum ${(M)match_part%%[0-9]#}' (--partnum will take the rest of the
+        path from its parent drive), or '--devpath ${match_part}'"
         print -n "\nUse this partition? (y/n)"
         read -qs
     }
@@ -2812,10 +2858,24 @@ __identifyExistingPartitions () {
         report $msg
     }
     setActiveDevpathToMatched () {
-        appendActiveInferred "Matching existing noclobber
-        partition based on $1"
-        setActive devpath $matchpart
-        setActive partnum ${(M)matchpart%%[0-9]#}
+        . <(localopts note: newdevpath:)
+        noteByIndex \
+            --array $input_array \
+            --index $ACTIVE[index] \
+            --note "Matching existing partition based on $note"
+        setActive devpath $newdevpath
+        setActive partnum ${(M)newdevpath%%[0-9]#}
+    }
+    setActiveToEnvValueIfSet () {
+        . <(localopts devpath: activefield: envfield:)
+        typeset envval
+        if [[ -n ${envval::=${(P)${:-${blockenv_array}[$devpath,$envfield]}:-}} ]]
+        then
+            print "Setting active $activefield to: $envval"
+            setActive $activefield $envval
+        else
+            return 0
+        fi
     }
 
     processPartitions () {
@@ -2832,8 +2892,7 @@ __identifyExistingPartitions () {
             [[ ${ACTIVE[type]} == drive ]] && drivepath=${ACTIVE[devpath]}
 
             # skip unless this is a noclobber partition
-            if [[ ${ACTIVE[type]} == partition ]] \
-                && ( activeIsSet keep || activeIsSet replace )
+            if [[ ${ACTIVE[type]} == partition ]] && activeIsNoclobber
             then
 
                 # use this to confirm match later in the code/label/size fallbacks
@@ -2888,11 +2947,14 @@ __identifyExistingPartitions () {
                             --result matchpart
                         then
                             if ${(P)noquery_env:-false} \
-                                || queryUsePartitionMatchedWith $matchpart code
+                                || queryUsePartitionMatchedWith \
+                                   --match_part $matchpart \
+                                   --match_with_field code
                             then
                                 setActiveDevpathToMatched \
-                                    "${codetype%code} form GUID type code
-                                     ${ACTIVE[code]}"
+                                    --note "${codetype%code} form GUID type
+                                            code ${ACTIVE[code]}" \
+                                    --newdevpath $matchpart
                                 continue
                             else
                             fi
@@ -2904,28 +2966,52 @@ __identifyExistingPartitions () {
                     fi
 
                     # try matching label, partlabel, and size
-                    for field in partlabel label size
+                    for envfield in partlabel label size
                     do
-                        if [[ -n ${ACTIVE[${field#part}]:-} ]]
+                        if [[ -n ${ACTIVE[${envfield#part}]:-} ]]
                         then
                             if matchTypeValue \
-                                --array_value_name $field \
-                                --active_value ${ACTIVE[${field#part}]} \
+                                --array_value_name $envfield \
+                                --active_value ${ACTIVE[${envfield#part}]} \
                                 --nummatches matches \
-                                --result matchpart
+                                --result matchpart \
+                                --matchedval matched_value
                             then
                                 if ${(P)noquery_env:-false} \
-                                    || queryUsePartitionMatchedWith $matchpart $field
+                                    || queryUsePartitionMatchedWith \
+                                       --match_part $matchpart \
+                                       --match_with_field $envfield
                                 then
                                     setActiveDevpathToMatched \
-                                        "$field match ${ACTIVE[${field#part}]}"
+                                        --note "$field match
+                                                ${ACTIVE[${envfield#part}]}" \
+                                        --newdevpath $matchpart
+                                    # since the actual partition label may
+                                    # have different case formatting, reset it
+                                    if [[ $envfield != size ]]
+                                    then
+                                        setActive ${envfield#part} "$matched_value"
+                                    else
+                                        # if size was matched, pull in any
+                                        # existing label, regardless
+                                        setActiveToEnvValueIfSet \
+                                            --devpath $matchpart \
+                                            --activefield label \
+                                            --envfield label
+                                        # prefer partlabel, so override
+                                        # label with it if present
+                                        setActiveToEnvValueIfSet \
+                                            --devpath $matchpart \
+                                            --activefield label \
+                                            --envfield partlabel
+                                    fi
                                     continue 2
                                 else
                                     continue
                                 fi
                             else
                                 reportFailedMatchFromField \
-                                    "$field" "${ACTIVE[${field#part}]}"
+                                    "$envfield" "${ACTIVE[${envfield#part}]}"
                             fi
                         fi
                     done
@@ -2937,11 +3023,50 @@ __identifyExistingPartitions () {
                     makeActive $record
                     if [[ -z ${ACTIVE[devpath]:-} || -z ${ACTIVE[partnum]:-} ]]
                     then
-                        fail "Storage template partition entry ${record##*,}
-                        in drive ${record%%,*} set to --noclobber cannot be
-                        matched to any existing partition. Either set a valid
-                        --devpath or --partnum, or a unique matching --label,
-                        --size, or --code value."
+                        typeset msg="Storage template partition entry
+                        ${record##*,} in drive ${record%%,*} set to
+                        ${(k)ACTIVE[(I)(${(~j:|:)${=${NOCLOBBER[partition]}}})]:-}
+                        cannot be automatically matched to any existing partition."
+                        if ${(P)noquery_env:-false}
+                        then
+                            fail "$msg Either set a valid --devpath or
+                            --partnum, or a unique matching --label, --size,
+                            or --code value. You may also run without the
+                            --$noquery_env option and will then be prompted
+                            to select an existing partition to match to."
+                        else
+                            warn $msg
+                            typeset pickpart
+                            selectPartitionUnderDrive           \
+                                --drivepath         $drivepath  \
+                                --drives_array      DRIVES      \
+                                --input_array       STORAGE     \
+                                --blockenv_array    BLOCKENV    \
+                                --noquery_env       NOQUERY     \
+                                --ignore_env        IGNORE      \
+                                --result_var        pickpart
+                            if [[ -n ${pickpart:-} ]]
+                            then
+                                setActive devpath $pickpart
+                                setActive partnum ${(M)pickpart%%[0-9]#}
+                                # if size was matched, pull in any
+                                # existing label, regardless
+                                setActiveToEnvValueIfSet \
+                                    --devpath $pickpart \
+                                    --activefield label \
+                                    --envfield label
+                                # prefer partlabel, so override
+                                # label with it if present
+                                setActiveToEnvValueIfSet \
+                                    --devpath $pickpart \
+                                    --activefield label \
+                                    --envfield partlabel
+                                continue 2
+                            else
+                                fail "$0 failed to get a manually
+                                      selected partition"
+                            fi
+                        fi
                     else
                         fail "Both devpath and partnum are set on a noclobber
                         partition, but we thought they weren't! Unexpected error
@@ -2958,6 +3083,71 @@ __identifyExistingPartitions () {
 
     processPartitions
 
+}
+selectPartitionUnderDrive () {
+    typeset -a _SELECTEDPARTS # fake closure
+
+    . <(localopts drivepath: blockenv_array: input_array: ignore_env: debug_opt: noquery_env: result_var:)
+
+    typeset -A env_staging
+    env_staging=("${(@Pkv)blockenv_array}")
+    
+    typeset -A types_actual
+    : ${(AA)drive_types_all::=${(kv)env_staging[(I)${drivepath}[0-9]*type]}}
+
+    # list of available drives on system
+    typeset -a partitions_all
+    partitions_all=(${(k)drive_types_all[(R)part]%,type})
+    partitions_unselected=(${(n)partitions_all:|_SELECTEDPARTS})
+
+    # query user for partition selection
+    if [[ -n ${partitions_unselected} ]]
+    then
+
+        typeset eraser
+        eraser="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
+
+        msg="Partition selection"
+        display "\n$msg\n${msg//?/-}"
+        display "Select from list of available partitions:"
+        print 1>&2 
+        typeset ap
+        typeset apart
+        for apart in $partitions_unselected
+        do
+            print -n "${ap::=${(M)apart%%[0-9]#}}: $apart (" 1>&2
+            print -n "SIZE: ${env_staging[$apart,size]:-} " 1>&2
+            print -n "${env_staging[$apart,partlabel]:+ PARTLABEL: }${(q-)env_staging[$apart,partlabel]:-}" 1>&2
+            print -n "${env_staging[$apart,mountpoint]:+ MOUNTPOINT: }${env_staging[$apart,mountpoint]:-}" 1>&2
+            print ")"
+        done
+        print "\nq: Quit\n" 1>&2
+
+        typeset confirm=""
+
+        while [[ -z ${(M)${confirm:-n}:#y} ]]; do
+            print -n "${${msg:-}//?/\b}$eraser" 1>&2
+            msg="Enter selection number (1"
+            [[ $ap -gt 1 ]] && msg+="-$ap"; msg+="/q) "
+            print -n "$msg" 1>&2
+            typeset r="0"
+            # accept digits 1-$i if $ap<10 (eg 1-3), otherwise digits 0-9
+            while [[ -z ${(M)${r}:#[q$((ap>9?0:1))-$((ap>9?9:$ap))]#} ]]; do
+                read -ks r
+            done
+            [[ ${(L)r} == q ]] && {
+                print "${${msg:-}//?/\b}${eraser}User selected quit.\n" 1>&2; exit;}
+            print -n "${${msg:-}//?/\b}$eraser${msg::=${partitions_unselected[$r]} - correct? (y/n) }" 1>&2
+            read -qs confirm && print 1>&2 || print -n "\b" 1>&2
+        done
+
+        selected=${partitions_unselected[$r]}
+        report "Manually selected partition: $selected"
+        partitions_unselected=("${(@)partitions_unselected:#$selected}")
+        _SELECTEDPARTS+=($selected)
+        eval $result_var'=$selected'
+
+    fi
 }
 __identifyPartitions () {
     . <(localopts blockenv_array: input_array:)
@@ -2976,7 +3166,7 @@ __identifyPartitions () {
             # need to check if there is an existing device path or partnum
             # skipping noclobber partitions, since we've just deal with them
             if [[ ${ACTIVE[type]} == partition ]] \
-                && ! ( activeIsSet keep || activeIsSet replace )
+                && ! activeIsNoclobber
             then
                 setActive devpath $drivepath$((++p))
                 setActive partnum $p
@@ -2998,20 +3188,27 @@ __identifyPartitions () {
 
         # if noclobber drive, use current max partition number as starting point
         typeset -i partnum
-        if activeIsSet noclobber
+        if descendantOrSelfIsNoclobber --index $drive
         then
             partnum=$maxpart
             if (( $maxpart > 0 ))
             then
-                [[ ${ACTIVE[noclobber]} == inherited ]] \
-                    && msg=" (inherited from a descendant element)" \
-                    || msg=""
-                alert "Drive #$drive ($drivepath) is set to noclobber$msg. New
-                partitions will be added starting AFTER partition number
+                if activeIsNoclobber --index $drive
+                then
+                    msg=""
+                else
+                    msg=" (inherited from a descendant element with one of the
+                    'noclobber' fields: ${:---${(v)^=NOCLOBBER}})"
+                fi
+                alert "Drive #$drive ($drivepath) is set to noclobber state$msg.
+                New partitions will be added starting AFTER partition number
                 $partnum. This may result in partition gaps if you have
                 other missing partitions with a value less than that. Check
                 partitions with sgdisk and/or lsblk. sgdisk's --sort option
                 can be used to address gaps. Read the sgdisk manpage first."
+                alert "Note that the partitions with any
+                ${:---${(v)^=NOCLOBBER[partition]}} fields will be set to
+                EXISTING partition numbers."
             fi
         else
             partnum=0
@@ -3628,406 +3825,7 @@ __inferMissingElements subsidiary functions
 each of these assumes the scope of __inferMissingElements  and must be called
 from within it (i.e. there is no explicit parameter option passing on these)
 ------------------------------------------------------------------------------
-inferFilesystemValues () {
-    if [[ ${ACTIVE[type]:-} == filesystem ]]
-    then
-
-        typeset field amatch
-
-        # missing mountpoint, fstype, from parent or ancestor
-        for field in mountpoint fstype
-        do
-            if [[ -z ${ACTIVE[$field]:-} ]]
-            then
-                if [[ -n ${PARENT[$field]:-} ]] && false
-                then
-                    setActive $field ${PARENT[$field]}
-                    appendActiveInferred "moved $field field from ${PARENT[type]} parent"
-                    unset "${input_array}[$PARENT[index],$field]"
-                    return 1
-                elif [[ -n ${amatch::=$(ancestorGetMatch $field)} ]]
-                then
-                    setActive $field ${(P)${:-${input_array}[$amatch]}}
-                    atype=${(P)${:-${input_array}[${amatch%$field}type]}}
-                    appendActiveInferred "moved $field field from $atype ancestor"
-                    unset "${input_array}[$amatch]"
-                    return 1
-                fi
-            fi
-        done
-
-        # missing fstype, infer from child
-        if [[ -z ${ACTIVE[fstype]:-} \
-           && ${(P)${:-${input_array}[${ACTIVE[index]},1,type]}:-} \
-           == subvolume ]]
-        then
-            eval $input_array'[$ACTIVE[index],fstype]=btrfs'
-            setActive fstype btrfs
-            appendActiveInferred "set fstype to btrfs due to subvolume child"
-            return 1
-        fi
-
-        # missing fstype, set default value
-        if [[ -z ${ACTIVE[fstype]:-} ]]
-        then
-            setActive fstype ext4
-            appendActiveInferred "set fstype to ext4 as default value for missing fstype field"
-            return 1
-        fi
-    fi
-    
-}
-inferSwapValues () {
-    if [[ ${ACTIVE[type]:-} == swap ]] && ${${ACTIVE[noclobber]+false}-true}
-    then
-        # missing size
-        if [[ -z ${ACTIVE[size]:-} ]]
-        then
-            if [[ -z $(getPartitionAncestor size) ]]
-            then
-                # this will just be used by paritition later
-                setActive size ram || :
-                appendActiveInferred "set missing swap size to match system ram"
-                return 1
-            fi
-        fi
-    fi
-}
-inferPartitionValues () {
-    if [[ ${ACTIVE[type]:-} == partition ]]
-    then
-        # missing size and is NOT noclobber
-        if [[ -z ${ACTIVE[size]:-} ]] && ${${ACTIVE[noclobber]+false}-true}
-        then
-
-            typeset dsizekey dsize dtype
-            typeset -a sibs
-
-            # check for swap descendant for use below
-            typeset -A types
-            : ${(AA)sizes::=${(Pkv)${:-${input_array}[(I)${ACTIVE[index]},[0-9]##,type]}}}
-            typeset swap_descendant=${(k)sizes[(r)swap]%,type}
-
-            # try to get first available size from any descendant
-            dsizekey=${(Pk)${:-${input_array}[(i)${ACTIVE[index]},*,size]}:-}
-            dsize=${(Pv)${:-${input_array}[$dsizekey]}:-}
-            dtype=${(Pv)${:-${input_array}[${dsizekey%%size}type]}:-}
-            if [[ -n ${dsize:-} ]]
-            then
-                setActive size $dsize
-                unsetActive warn
-                appendActiveInferred "claimed size from ${dtype:-} descendant"
-                unset "${input_array}[$dsizekey]"
-                return 1
-
-            # if there is a swap descendant, it lacks a size
-            # so we infer system ram size
-            elif [[ -n ${swap_descendant} ]]
-            then
-                setActive size ram
-                unsetActive warn
-                appendActiveInferred "set missing size to match system ram due to swap descendant"
-                return 1
-
-            # else count other siblings, if we're alone then max
-            # (swap check must be before this)
-            elif [[ -z ${(A)sibs::=$(getOtherSiblings)} ]]
-            then
-
-                setActive size max
-                unsetActive warn
-                appendActiveInferred "set paritition size to be maximum
-                    available free space as it is the only partition listed"
-                return 1
-
-            # check for conditition of all existing peers
-            else
-
-                typeset sib all_sibs_pass=true
-
-                # a noclobber sibling is assumed to have a size
-                # (we don't need to know it since we won't be
-                # creating the partition), so we check here for
-                # either noclobber or size. if all other partitions
-                # have at least one of these values then we can
-                # safely assume this single partition that is
-                # missing a value is a max size partition
-                for sib in $sibs
-                do
-                    # TODO: if I change noclobber checks to
-                    # be a function rather than preset parameter
-                    # lookup, then this will also change
-                    if ( ! isSet "${input_array}[$sib,noclobber]" ) || 
-                       ( ! isSet "${input_array}[$sib,size]" )
-                    then
-                    else
-                        # sibling item without noclobber or size found
-                        all_sibs_pass=false
-                        break
-                    fi
-                done
-
-                if $all_sibs_pass
-                then
-                    setActive size max
-                    unsetActive warn
-                    appendActiveInferred "set partition size to use maximum
-                        available space on drive as all other partitions are
-                        either either fixed size or are noclobber"
-                    return 1
-                fi
-
-                # any other future all-sibling checks go here
-
-                # we drop out of this loop here with an implicit
-                # return 0 as we've now done our best to infer
-                # partition values
-                warn "Unable to infer a size value for partition $record"
-
-            fi
-
-        fi
-    fi
-}
-inferDrive () {
-
-    # insert and indent all items, add drive (if no initial drive present)
-    if [[ ${(P)${:-${input_array}[1,type]}} == drive ]]
-    then
-        return 0
-    fi
-
-    . <(localopts input_array:)
-
-    input_array=${input_array:-STORAGE} # be good, though, and use option
-
-    typeset -A STAGING; STAGING=()
-
-    typeset index
-    for index in ${(Pk)input_array}
-    do
-        STAGING[1,$index]=${(P)${:-${input_array}[$index]}}
-    done
-    STAGING[1,type]=drive
-    STAGING[1,inferred]="added implied drive"
-    STAGING[1,auto]=""
-    eval $input_array'=("${(@kv)STAGING}")'
-
-}
-inferNoclobber () {
-    set -- noclobber
-    activeIsSet $1 && return 0
-    if descendantIsSet $1
-    then
-        setActive $1 inherited
-        appendActiveInferred "set $1 due to $1 descendant"
-        return 1
-    elif ancestorIsSet $1
-    then
-        typeset -a amatch
-        amatch=($(ancestorGetMatch noclobber))
-        if [[ ${(P)${:-${input_array}[${amatch[1]}]}} != inherited ]]
-        then
-            setActive $1 inherited
-            appendActiveInferred "set $1 due to $1 ancestor"
-            return 1
-        fi
-    fi
-}
-inferSsd () {
-    set -- ssd
-    activeIsSet $1 && return 0
-    if descendantIsSet $1
-    then
-        setActive $1 inherited
-        appendActiveInferred "set $1 due to $1 descendant"
-        return 1
-    elif ancestorIsSet $1
-    then
-        setActive $1 inherited
-        appendActiveInferred "set $1 due to $1 ancestor"
-        return 1
-    fi
-}
-inferClaimFromDescendant () {
-    for inferfield in ${(P)=${:-${inherit_array}[up]}}
-    do
-        [[ -n ${PARENT[type]:-} ]]  || continue
-        isSet "PARENT[$inferfield]" && continue
-        ! activeIsSet $inferfield   && continue
-        typeset -a validfields
-        valid_parent=(
-            ${(P)=${:-${valid_array}[common]}}
-            ${(P)=${:-${valid_array}[${PARENT[type]}]}}
-            )
-        valid_active=(
-            ${(P)=${:-${valid_array}[common]}}
-            ${(P)=${:-${valid_array}[${ACTIVE[type]}]}}
-            )
-        valueInList valid_parent $inferfield && {
-            setParent $inferfield ${ACTIVE[$inferfield]:-}
-            appendActiveInferred \
-                "Set $inferfield on ${PARENT[type]} from child ${ACTIVE[type]} $inferfield value."
-            # MOVE from source record if not valid there
-            valueInList valid_active $inferfield || {
-                unsetActive $inferfield
-            }
-            return 1
-            }
-    done
-}
-inferInheritUp () {
-    for inferfield in ${(P)=${:-${inherit_array}[up]}}
-    do
-        [[ -n ${PARENT[type]:-} ]]  || continue
-        isSet "PARENT[$inferfield]" && continue
-        ! activeIsSet $inferfield   && continue
-        typeset -a validfields
-        valid_parent=(
-            ${(P)=${:-${valid_array}[common]}}
-            ${(P)=${:-${valid_array}[${PARENT[type]}]}}
-            )
-        valid_active=(
-            ${(P)=${:-${valid_array}[common]}}
-            ${(P)=${:-${valid_array}[${ACTIVE[type]}]}}
-            )
-        valueInList valid_parent $inferfield && {
-            setParent $inferfield ${ACTIVE[$inferfield]:-}
-            appendActiveInferred \
-                "Set $inferfield on ${PARENT[type]} from child ${ACTIVE[type]} $inferfield value."
-            # MOVE from source record if not valid there
-            valueInList valid_active $inferfield || {
-                unsetActive $inferfield
-            }
-            return 1
-            }
-    done
-}
-inferInheritDown () {
-    for inferfield in ${(P)=${:-${inherit_array}[down]}}
-    do
-        [[ -n ${PARENT[type]:-} ]]  || continue
-        isSet "ACTIVE[$inferfield]" && continue
-        ! parentIsSet $inferfield   && continue
-        typeset -a validfields
-        valid_parent=(
-            ${(P)=${:-${valid_array}[common]}}
-            ${(P)=${:-${valid_array}[${PARENT[type]}]}}
-            )
-        valid_active=(
-            ${(P)=${:-${valid_array}[common]}}
-            ${(P)=${:-${valid_array}[${ACTIVE[type]}]}}
-            )
-        valueInList valid_active $inferfield && {
-            setActive $inferfield ${PARENT[$inferfield]:-}
-            appendActiveInferred \
-                "Set $inferfield on ${ACTIVE[type]} from parent ${PARENT[type]} $inferfield value."
-            # MOVE from source record if not valid there
-            valueInList valid_parent $inferfield || {
-                unsetParent $inferfield
-            }
-            return 1
-            }
-    done
-}
-inferParentPartition () {
-
-    if [[ ${PARENT[type]:-} != drive ]]
-    then
-
-        return 0
-
-    elif [[ $ACTIVE[type] == filesystem ]]
-    then
-
-        # if filesystem has other filesystem siblings (or any siblings at all!)
-        # then we need a partition  OR regardless of whether the filesystem is
-        # the only filesystem/sibling, if it (OR any of its desendants) has a
-        # size other than max, then also create partition parent
-        # OR (TODO)
-        # if filesystem is single but not of type that can format an entire
-        # drive (or rather which would be useless if they did) then partition
-
-        # try to get first available size from any descendant
-        typeset dsizekey dsize dtype
-        dsizekey=${(Pk)${:-${input_array}[(i)${ACTIVE[index]},*,size]}:-}
-        dsize=${(Pv)${:-${input_array}[$dsizekey]}:-}
-        dtype=${(Pv)${:-${input_array}[${dsizekey%%size}type]}:-}
-
-        if [[ -n $(getOtherSiblings) ]] \
-        || [[ -n ${ACTIVE[size]:-} && ${(L)ACTIVE[size]} != max ]] \
-        || [[ -n ${dsize:-} && ${(L)dsize:-} != max ]]
-        then
-
-            insertParent --type partition
-            appendActiveInferred "added implied parent partition of filesystem"
-            return 1
-        else
-            return 0
-        fi
-
-    elif [[ $ACTIVE[type] == encryption ]]
-    then
-
-        insertParent --type partition
-        appendActiveInferred "added implied parent partition of encryption"
-        return 1
-
-    elif [[ $ACTIVE[type] == swap ]]
-    then
-
-        insertParent --type partition
-        appendActiveInferred "added implied parent partition of swap"
-        return 1
-
-    fi
-}
-inferParentEncryption () {
-    if [[ ${PARENT[type]:-} != encryption ]]
-    then
-
-        if activeIsSet encrypt
-        then
-
-            unsetActive encrypt
-            insertParent --type encryption
-            appendActiveInferred \
-                "added parent encryption of ${ACTIVE[type]} due to --encrypt"
-            [[ -n ${ACTIVE[label]:-} ]] && \
-                setActive label "crypt_${ACTIVE[label]//[^[:WORD:]]##/_}"
-            return 1
-
-        fi
-
-    fi
-}
-inferParentFilesystem () {
-    if [[ ${PARENT[type]:-} != filesystem ]]
-    then
-
-        if [[ $ACTIVE[type] == subvolume ]]
-        then
-
-            insertParent --type filesystem
-            appendActiveInferred \
-                "added implied parent filesystem of btrfs subvolume"
-            return 1
-
-        fi
-
-    fi
-}
-inferChildFilesystem () {
-    if [[    ${ACTIVE[type]:-} =~ (drive|encryption|partition) \
-       && -n ${ACTIVE[fstype]:-} && -z $(getChildren ${ACTIVE[index]}) ]]
-    then
-        eval $input_array'[${ACTIVE[index]},1,type]=filesystem'
-        setActive inferred \
-            "added implied child filesystem of ${ACTIVE[type]} due to fstype value being set"
-        setActive auto
-        return 1
-    fi
-}
+# NOTE - moved to assume/default
 # ----------------------------------------------------------------------------
 appendActiveInferred () {
     . <(localopts index: array:)
@@ -4172,6 +3970,34 @@ isSet () {
 parentIsSet () {
     isSet "PARENT[$1]"
 }
+indexIsNoclobber () {
+    . <(localopts index: field: array:)
+    array=${array:-STORAGE}
+    index=${index:-${1:-}}
+    [[ -n ${index:-} ]] || fail "$0 missing index"
+    typeset ncfield
+    for ncfield in ${=NOCLOBBER[partition]};
+    do
+        eval '(( ${+'$array'[$index,$ncfield]} )) && return 0'
+    done
+    return 1
+}
+descendantOrSelfIsNoclobber () {
+    . <(localopts index: field: array:)
+    array=${array:-STORAGE}
+    index=${index:-${1:-}}
+    [[ -n ${index:-} ]] || fail "$0 missing index"
+    typeset ncfield
+    for ncfield in ${=NOCLOBBER[partition]};
+    do
+        eval '[[ -n ${+'$array'[(I)$index,*$ncfield]} ]] && return 0'
+    done
+    return 1
+}
+
+activeIsNoclobber () {
+    indexIsNoclobber --index ${ACTIVE[index]}
+}
 activeIsSet () {
     isSet "ACTIVE[$1]"
 }
@@ -4205,7 +4031,6 @@ unsetByIndex () {
     value=${value:-${2:-}}
     unset "${array}[$index,$field]"
 }
-
 descendantIsSet () {
     # return true if value is set, even if non null
     # for any descendant record
@@ -4333,7 +4158,7 @@ genPartitions () {
             sectionHeader partitions
 
             # is noclobber
-            if [[ -n ${STORAGE[(I)*keep]} || -n ${STORAGE[(I)*replace]} ]]
+            if descendantOrSelfIsNoclobber --index $record
             then
 
                 eval $outputvar'+=(
@@ -4361,7 +4186,7 @@ genPartitions () {
 
             fi
 
-        elif [[ ${ACTIVE[type]} == partition ]] && ! activeIsSet noclobber
+        elif [[ ${ACTIVE[type]} == partition ]] && ! activeIsNoclobber
         then
 
             sgdisk_cmd="sgdisk"
@@ -4456,7 +4281,7 @@ genEncryption () {
             lukso+="${s::=${ACTIVE[ssd]+${OPTIONS[luks,open,ssd]:-}}}${s:+ }"
             lukso+="${ACTIVE[devpath]} "
             lukso+="${(q-)ACTIVE[label]:-${ACTIVE[devpath]//\//_}} "
-            activeIsSet noclobber || eval $outputvar'+=("\n# LUKS formatting" "$luksf")'
+            activeIsoclobber || eval $outputvar'+=("\n# LUKS formatting" "$luksf")'
             eval $outputvar'+=("\n# LUKS open" "$lukso")'
         fi
 
@@ -4506,7 +4331,7 @@ genSwap () {
             mkswap+="$swapid ${ACTIVE[devpath]}"
             swapon+="$swapid $swapssd${ACTIVE[devpath]}"
 
-            activeIsSet noclobber || \
+            activeIsNoclobber || \
                 eval $outputvar'+=("$mkswap # make swap device")'
             eval $outputvar'+=("$swapon # activate swap device")'
 
@@ -4531,7 +4356,7 @@ genFilesystem () {
 
         makeActive $record
 
-        if [[ ${ACTIVE[type]} == filesystem ]] && ! activeIsSet noclobber
+        if [[ ${ACTIVE[type]} == filesystem ]] && ! activeIsNoclobber
         then
 
             sectionHeader filesystem
@@ -4730,6 +4555,14 @@ debugDump () {
                 --text "${(r.$padding...)key} : ${(P)${:-${array}[$key]}}"
         done
     fi
+    if ${TREE:-false}
+    then
+        __printTree                   \
+            --input_array       STORAGE     \
+            --tree_option       TREE        \
+            --input_filename    INPUTFILE   \
+            --input_filepath    SOURCEFILE
+    fi
 }
 debugLog () {
     typeset x=$1; shift
@@ -4740,6 +4573,7 @@ debugLog () {
     print -- "$x${__}\n" >> $DEBUGLOG
 }
 fail () {
+    ${DEBUG:-false} && debugDump
     teelog --category FAILURE --color red "$*"
     print 1>&2
     DEBUG=true
