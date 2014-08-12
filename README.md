@@ -257,18 +257,19 @@ what your template will create
 ### Trust but Verify: 
 
 storage-gen is non-destructive. It merely outputs a script that can (and must) 
-be reviewed prior to execution. You can run it on your live system safely. 
-However the final output script is potentially dangerous in that it makes 
-partition changes. It is absolutely your own  responsibility to make sure the 
-final script does what you want it to! 
+be reviewed prior to execution. You can run storage-gen on a live system 
+safely. However the final output script is potentially dangerous in that it 
+makes partition changes. It is absolutely your own responsibility to make sure 
+the final script does what you want it to! 
 
 ### Requirements: 
 
 Init-storage expects certain linux utilities (lsblk, mount, mkfs.*) as well as 
-zsh. Why zsh? Init-storage was written primarily for use on new Arch Linux 
-installations, and zsh is the default shell on the Arch install medium. Zsh is 
-also a capable and well documented scripting language, albeit it one prone to 
-hieroglyphic like parameter expansions. 
+zsh. An aside: Why zsh? Init-storage was written primarily for use on new Arch 
+Linux installations, and zsh is the default shell on the Arch install medium. 
+Zsh is a capable and well documented scripting language, albeit it one prone to 
+hieroglyphic like parameter expansions. Regardless, something of this scope may 
+be best rewritten in another language. 
 
 ### Intended Systems: 
 
@@ -369,7 +370,15 @@ or
     storage-gen new-typical --output my-storage-script 
 
 See the $SCRIPTROOT/storage subdirectory for a list of prepared storage 
-definition files and further details on format.
+definition files and further details on format. 
+
+## Existing Partitions 
+
+You may wish to keep an existing partition (and whatever it contains) as it is. 
+For example, you might have an existing filesystem that you want to mount under 
+/home. To do this, just add the --keep option 
+
+    filesystem --mountpoint /home --keep
 
 
 ## Command Line Options
