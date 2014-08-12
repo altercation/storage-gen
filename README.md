@@ -78,6 +78,11 @@ this
 
 ### Automatically creates this script 
 
+Note that it does *not* automatically run this script. You may save it via 
+standard output redirection or using the `--output` command line option. This 
+gives you the important opportunity to review the output and make changes to 
+either the template or the raw script output itself. 
+
     #!/usr/bin/env zsh 
 
     # ---------------------------------------------------------- 
