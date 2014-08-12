@@ -3330,8 +3330,8 @@ __printTree () {
 
     typeset -A colorcodes
     colorcodes=(
-    drive       green
-    partition   yellow
+    drive       white
+    partition   green
     filesystem  blue
     subvolume   blue
     encryption  magenta
@@ -3344,8 +3344,10 @@ __printTree () {
     print "${i}${COLOR[white]:-}Source filename: ${(P)input_filename}"
     print "${i}Source filepath: ${(P)input_filepath}"
     print
-    print "${i}${COLOR[default]:-}Items in [BRACKETS] have been automatically inferred."
-    print "${i}Items in RED are set to noclobber.\n"
+    print "${i}${COLOR[default]:-}Items in [BRACKETS] have been automatically inferred.\n"
+    print "${i}Partitions in RED are to be replaced due to --replace"
+    print "${i}Partitions in YELLOW are to be retained due to --keep"
+    print "${i}Partitions in GREEN are to be newly created\n"
 
     buildTree () {
 
@@ -3371,7 +3373,9 @@ __printTree () {
             if (( ${+ACTIVE[auto]} )); then
                 ACTIVE[type]="[${ACTIVE[type]}]"
             fi
-            if (( ${+ACTIVE[noclobber]} )); then
+            if (( ${+ACTIVE[keep]} )); then
+                line2="${x}${COLOR[yellow]:-}${ACTIVE[type]}${COLOR[default]:-} "
+            elif (( ${+ACTIVE[replace]} )); then
                 line2="${x}${COLOR[red]:-}${ACTIVE[type]}${COLOR[default]:-} "
             else
                 line2="${x}${ACTIVE[type]} "
