@@ -42,13 +42,21 @@ this
 
     # storage-gen keep-home --tree 
 
-Wait, it does what? 
 
-This 
+
+# It does what? 
+
+## This command 
 
     # storage-gen new-simple --tree 
 
-### outputs this: 
+## Processes this template file 
+
+    filesystem --size 20G --mountpoint / 
+    filesystem --mountpoint /home 
+    swap 
+
+## Creating this structure automatically 
 
     [drive] devpath=/dev/sdb 
        │   
@@ -64,12 +72,11 @@ This
           │   
           └──filesystem fstype=ext4 mountpoint=/home devpath=/dev/sdb3 
 
-while this (no tree) 
+## While this command (without --tree) 
 
     # storage-gen new-simple 
 
-outputs something like this (some comments removed... remove them all with the 
---compact command line option) 
+## Automatically creates this script 
 
     #!/usr/bin/env zsh 
 
@@ -107,7 +114,8 @@ outputs something like this (some comments removed... remove them all with the
     mount defaults,x-mount.mkdir /dev/sdb1 /mnt 
     mount defaults,x-mount.mkdir /dev/sdb3 /mnt/home 
 
-
+(some comments removed... remove them all with the `--compact` command line 
+option) 
 
 ### Templates: 
 
@@ -231,7 +239,7 @@ If you wanted to be lazy about things, the following is equivalent
         subvolume --mountpoint / 
         subvolume --mountpoint /home 
 
-A nice tool is the --tree option that would show you a structured preview of 
+A nice tool is the `--tree option` that would show you a structured preview of 
 what your template will create 
 
 ### Trust but Verify: 
@@ -292,7 +300,7 @@ Or the same without messages--
 
     # storage-gen --tree --quiet mystorage 
 
-Resulting in the following for a drive selection of /dev/sda-- 
+Resulting in the following for a drive selection of /dev/sda 
 
     drive devpath=/dev/sda 
     │   
@@ -311,8 +319,8 @@ manually we could either insert it into our file:
     filesystem --size 30G --mountpoint / 
     filesystem --mountpoint /home 
 
-or we could append it to the command line using the --drives option which takes 
-a comma separated list of drives: 
+or we could append it to the command line using the `--drives` option which 
+takes a comma separated list of drives: 
 
     storage-gen --drives /dev/sdb  mystorage 
 
