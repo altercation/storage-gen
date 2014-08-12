@@ -43,19 +43,19 @@ use this
     # storage-gen keep-home --tree
 
 
-# It does what?
+## It does what?
 
-## This command
+### This command
 
     # storage-gen new-simple --tree
 
-## Processes this template file
+### Processes this template file
 
     filesystem --size 20G --mountpoint /
     filesystem --mountpoint /home
     swap
 
-## Creating this structure automatically
+### Creating this structure automatically
 
     [drive] devpath=/dev/sdb
        │  
@@ -71,11 +71,11 @@ use this
           │  
           └──filesystem fstype=btrfs mountpoint=/home devpath=/dev/sdb3
 
-## While this command (without --tree)
+### While this command (without --tree)
 
     # storage-gen new-simple
 
-## Automatically creates this script
+### Automatically creates this script
 
     #!/usr/bin/env zsh
 
