@@ -2,3 +2,6 @@
 SCRIPTROOT="${${SCRIPTPATH:=$(readlink -f $0)}:h:h}"
 [[ -f ${readme::=$SCRIPTROOT/README.md} ]] && rm -f $readme
 $SCRIPTROOT/${SCRIPTROOT:t} --readme > $readme
+git add $SCRIPTROOT/${SCRIPTROOT:t} $SCRIPTROOT/README.md
+git commit -m "README update"
+git push

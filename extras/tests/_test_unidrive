@@ -1,5 +1,0 @@
-drive
-    partition --size 100M
-        filesystem
-    partition
-        filesystem

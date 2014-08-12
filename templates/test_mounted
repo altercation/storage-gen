@@ -1,4 +1,0 @@
-drive --devpath /dev/sda
-    partition --size max
-drive --devpath /dev/sdb
-    partition --size max

@@ -234,11 +234,13 @@ Storage template files are really just outlines. You can indent (spaces
 OR tabs, not both, and spaces are recommended) in order to provide
 information about which element goes where. For example
 
-    drive
+    drive   # oh yeah, comments are ok
         partition --size 200M
             filesystem --mountpoint /boot --fstype vfat
         partition
-            filesystem
+            # filesystem  (this filesystem is commented out
+            #              but the script knows we need one
+            #              there so it will make one)
                 subvolume --mountpoint /
                 subvolume --mountpoint /home
 

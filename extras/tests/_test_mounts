@@ -1,6 +1,0 @@
-drive --noclobber
-    partition
-#partition --noclobber --code 2700 --label windows # windows re tools partition, leave alone
-#partition --noclobber --label windows
-#partition --partnum 5 --size 200M
-#partition --partnum 8 --size 300M

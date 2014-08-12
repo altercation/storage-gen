@@ -1,3 +1,0 @@
-drive --devpath /dev/sdb
-    partition
-        swap

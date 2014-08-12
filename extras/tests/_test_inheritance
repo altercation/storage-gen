@@ -1,3 +1,0 @@
-partition
-    filesystem
-        subvolume --size 100

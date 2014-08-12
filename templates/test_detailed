@@ -1,2 +1,0 @@
-drive
-    filesystem --mountpoint / --fstype btrfs --label "a   label"

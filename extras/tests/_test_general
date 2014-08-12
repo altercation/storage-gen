@@ -1,5 +1,0 @@
-drive id=/dev/sda id=1
-partition id=1
-    filesystem --keep #--label "a    label"
-partition device=/dev/sda1
-    filesystem --size 20G
