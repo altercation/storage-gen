@@ -467,15 +467,15 @@ __MAIN () {
         --siblings_array    SIBLINGS    \
         --valid_array       VALID
 
-    track __validateStructures          \
-        --children_array    CHILDREN    \
-        --required_array    REQUIRED    \
-        --siblings_array    SIBLINGS    \
-        --input_array       STORAGE     \
-        --valid_array       VALID
-
-    track __reorderPartitions           \
-        --input_array       STORAGE 
+#    track __validateStructures          \
+#        --children_array    CHILDREN    \
+#        --required_array    REQUIRED    \
+#        --siblings_array    SIBLINGS    \
+#        --input_array       STORAGE     \
+#        --valid_array       VALID
+#
+#    track __reorderPartitions           \
+#        --input_array       STORAGE 
 
     track __identifyDrives              \
         --drives_array      DRIVES      \
@@ -484,7 +484,7 @@ __MAIN () {
         --noquery_env       NOQUERY     \
         --ignore_env        IGNORE
 
-    track __identifyNoclobberPartitions \
+    track __identifyExistingPartitions  \
         --drives_array      DRIVES      \
         --input_array       STORAGE     \
         --blockenv_array    BLOCKENV    \
@@ -496,6 +496,12 @@ __MAIN () {
         --input_array       STORAGE     \
         --blockenv_array    BLOCKENV 
 
+track __printTree                   \
+    --input_array       STORAGE     \
+    --tree_option       TREE        \
+    --input_filename    INPUTFILE   \
+    --input_filepath    SOURCEFILE
+exit
     track __identifyOtherDevicePaths    \
         --input_array       STORAGE
 
@@ -2198,10 +2204,6 @@ __inflateStructure () {
                                 $rightful_owner_type \
                                 $new_relative_index
                             then
-                            print new_relative_cmd $new_relative_cmd \
-                                    --type $rightful_owner_type \
-                                    --array $storage_array \
-                                    --index $new_relative_index
                             $new_relative_cmd \
                                     --type $rightful_owner_type \
                                     --array $storage_array \
@@ -2748,7 +2750,7 @@ __identifyDrives () {
     done
 
 }
-__identifyNoclobberPartitions () {
+__identifyExistingPartitions () {
     # each noclobber partition either has an explicit devpath, an explicit partnum
     # or some information that should allow us to deduce which partition it is.
     # if the devpath and partnum are missing and if the deduction fails, then we
@@ -2830,7 +2832,8 @@ __identifyNoclobberPartitions () {
             [[ ${ACTIVE[type]} == drive ]] && drivepath=${ACTIVE[devpath]}
 
             # skip unless this is a noclobber partition
-            if [[ ${ACTIVE[type]} == partition ]] && activeIsSet noclobber
+            if [[ ${ACTIVE[type]} == partition ]] \
+                && ( activeIsSet keep || activeIsSet replace )
             then
 
                 # use this to confirm match later in the code/label/size fallbacks
@@ -2878,9 +2881,6 @@ __identifyNoclobberPartitions () {
                             --active_value ${ACTIVE[code]} \
                             --nummatches matches \
                             --result matchpart
-                        print "status is $?"
-                        print "nummatches $matches"
-                        print "result $matchpart"
                         if matchTypeValue \
                             --array_value_name $codetype \
                             --active_value ${ACTIVE[code]} \
@@ -2894,6 +2894,7 @@ __identifyNoclobberPartitions () {
                                     "${codetype%code} form GUID type code
                                      ${ACTIVE[code]}"
                                 continue
+                            else
                             fi
                         else
                             reportFailedMatchFromField \
@@ -2974,7 +2975,8 @@ __identifyPartitions () {
 
             # need to check if there is an existing device path or partnum
             # skipping noclobber partitions, since we've just deal with them
-            if [[ ${ACTIVE[type]} == partition ]] && ! activeIsSet noclobber
+            if [[ ${ACTIVE[type]} == partition ]] \
+                && ! ( activeIsSet keep || activeIsSet replace )
             then
                 setActive devpath $drivepath$((++p))
                 setActive partnum $p
@@ -4388,7 +4390,7 @@ genPartitions () {
             sgdisk_cmd+=(" --attributes=${ACTIVE[partnum]}:set:0")
 
             [[ -n "${ACTIVE[code]:-}" ]] && \
-            sgdisk_cmd+=" --typecode=${ACTIVE[partnum]}:${ACTIVE[CODE]}"
+            sgdisk_cmd+=" --typecode=${ACTIVE[partnum]}:${ACTIVE[code]}"
 
             [[ -n "${ACTIVE[label]:-}" ]] && \
                 sgdisk_cmd+=" --change-name=${ACTIVE[partnum]}:${(q-)ACTIVE[label]}"
