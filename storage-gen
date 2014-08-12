@@ -108,6 +108,21 @@ use this
 
 (some comments removed... remove them all with the `--compact` command line option)
 
+## Ok, so what else can it do?
+
+* Handles many different storage configurations
+
+* Allows you to identify partitions that you want to keep
+
+* Allows you to replace partitions with new content
+
+* Encrypts
+
+* Understands most of what you throw at it via the templates
+
+* Knows what you need... you want a filesystem and a swap? It figures
+  out what partitions, etc.
+
 Templates:
 
 In the above examples, the `new-typical` and `keep-home` command line

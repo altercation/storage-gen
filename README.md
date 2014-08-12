@@ -110,6 +110,21 @@ this
 (some comments removed... remove them all with the `--compact` command line 
 option) 
 
+## Ok, so what else can it do? 
+
+* Handles many different storage configurations 
+
+* Allows you to identify partitions that you want to keep 
+
+* Allows you to replace partitions with new content 
+
+* Encrypts 
+
+* Understands most of what you throw at it via the templates 
+
+* Knows what you need... you want a filesystem and a swap? It figures 
+  out what partitions, etc. 
+
 ### Templates: 
 
 In the above examples, the `new-typical` and `keep-home` command line arguments 
@@ -521,8 +536,8 @@ template to use. This option is merely a more explicit alternative to that.
 
 ### Storage Definition File - Valid Item Options (Fields)
 
-These are the options (fields) that are acceptable for each of the storage types. The 
-types listed are the only valid types (drive, partition, etc.).
+These are the options (fields) that are acceptable for each of the storage 
+types. The types listed are the only valid types (drive, partition, etc.).
 * `drive:` device ssd
 * `partition:` bootable code size partnum new keep replace label
 * `logical:` Not yet implemented
