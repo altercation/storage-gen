@@ -1,6 +1,9 @@
 # storage-gen
 
 
+**WARNING:** This code is under live development RIGHT NOW... this notice will 
+removed once it reaches a beta release state. 
+
 **Name:** storage-gen 
 
 **Description:** Generate linux storage structures from minimal definition files 
