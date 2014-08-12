@@ -21,14 +21,14 @@ tree view output and live view.
 ### Try It: 
 
 Having booted the Arch Linux install medium, download the storage-gen script 
-with the following command. 
+with the following command: 
 
     # curl -L http://links.ethanschoonover.com/storage-gen | zsh 
     # storage-gen --help 
 
 To create a configuration script for a typical new Arch Linux system, you could 
 use the following commands (these only output text or tree information, they do 
-not execute any changes to the system). 
+not execute any changes to the system): 
 
     # storage-gen new-simple 
     # storage-gen new-simple --tree 
@@ -55,19 +55,20 @@ it under our mountpoint (/mnt by default) for subsequent system installation:
     filesystem --mountpoint / 
 
 Of course we may want to separate out the root and home partitions, and limit 
-the amount of space the root partition uses : 
+the amount of space the root partition uses: 
 
     filesystem --mountpoint / --size 20G 
     filesystem --mountpoint /home 
 
-### Or create the same thing but using btrfs subvolumes : 
+Or create the same thing but using btrfs subvolumes (so no size is necessary as 
+they will fall under a single partition): 
 
     filesystem 
         subvolume --mountpoint / 
         subvolume --mountpoint /home 
 
 Here is a variation that makes an encrypted partition for home and adds in a 
-swap partition, which will default to the system ram size : 
+swap partition, which will default to the system ram size: 
 
     filesystem --mountpoint / --size 20G 
     filesystem --mountpoint /home --encrypt 
@@ -75,14 +76,14 @@ swap partition, which will default to the system ram size :
 
 Here is another similar configuration that tells the system to keep the 
 existing home partition untouched and to replace the existing system root 
-partition with a new installation : 
+partition with a new installation: 
 
     filesystem --replace --label root --mountpoint / 
     filesystem --keep    --label home --mountpoint /home --encrypt 
     swap 
 
 You can mix in --keep and --replace partitions with the creation of new 
-partitions : 
+partitions: 
 
     filesystem --keep    --devpath /dev/sda1 --mountpoint /boot 
     filesystem --replace --devpath /dev/sda2 --mountpoint / 
@@ -93,13 +94,15 @@ The previous examples would have prompted the user to select the paritions that
 we wished to keep or replace. We can pre-select partitions on the current 
 system by providing details about the partitions (code, size, label). Here we 
 use labels and code values to help the script figure out which partitions we 
-mean : 
+mean: 
 
     filesystem --keep    --code ef00  --mountpoint /boot 
     filesystem --replace --label root --mountpoint / 
     filesystem --keep    --label home --mountpoint /home --encrypt 
 
-### Another option would have been to specify a partition number : 
+### Another option would have been to specify a partition number: 
+
+
 
     filesystem --keep    --partnum 1 --mountpoint /boot 
     filesystem --replace --partnum 2 --mountpoint / 
@@ -107,14 +110,16 @@ mean :
 
 In this partnum example, the script would prompt interactively for a drive to 
 be selected. We could add this information directly to the template if we 
-wanted to : 
+wanted to: 
+
+
 
     drive --devpath /dev/sda 
         filesystem --keep    --partnum 1 --mountpoint /boot 
         filesystem --replace --partnum 2 --mountpoint / 
         filesystem --keep    --partnum 3 --mountpoint /home --encrypt 
 
-### or to each filesystem (and thus the containing parition) : 
+### or to each filesystem (and thus the containing parition): 
 
     filesystem --keep    --devpath /dev/sda1 --mountpoint /boot 
     filesystem --replace --devpath /dev/sda2 --mountpoint / 
@@ -140,7 +145,7 @@ skip asking you so many questions, tell it to not query:
 
 Storage template files are really just outlines. You can indent (spaces OR 
 tabs, not both, and spaces are recommended) in order to provide information 
-about which element goes where. For example : 
+about which element goes where. For example: 
 
     drive 
         partition --size 200M 
@@ -150,7 +155,7 @@ about which element goes where. For example :
                 subvolume --mountpoint / 
                 subvolume --mountpoint /home 
 
-### If you wanted to be lazy about things, the following is equivalent : 
+### If you wanted to be lazy about things, the following is equivalent: 
 
         filesystem --size 200M --mountpoint /boot --fstype vfat 
         subvolume --mountpoint / 
