@@ -48,17 +48,60 @@ This
 
     # storage-gen new-simple --tree
 
-outputs this
+outputs this:
 
-    ...INSERT TREE HERE...
+    [drive] devpath=/dev/sdb
+       │  
+       ├──[partition] size=20G devpath=/dev/sdb1 partnum=1
+       │  │  
+       │  └──filesystem fstype=ext4 devpath=/dev/sdb1 mountpoint=/
+       │  
+       ├──[partition] size=ram devpath=/dev/sdb2 partnum=2
+       │  │  
+       │  └──swap devpath=/dev/sdb2
+       │  
+       └──[partition] size=max devpath=/dev/sdb3 partnum=3
+          │  
+          └──filesystem fstype=ext4 mountpoint=/home devpath=/dev/sdb3
 
 while this (no tree)
 
     # storage-gen new-simple
 
-outputs something like this (some comments removed... remove them all with --compact)
+outputs something like this (some comments removed... remove them all with the --compact command line option)
 
-    ...INSERT SCRIPT HERE...
+    #!/usr/bin/env zsh
+
+    # Drive formatting and partition structures
+    # ----------------------------------------------------------
+    backupdir=$(mktemp --tmpdir=/tmp -d part-backup-XXX)
+    backupfile="$backupdir/_dev_sdb_backup"
+    sgdisk --backup=$backupdir # backup existing partition table
+    print "Partition table backed up to $backupdir" 1>&2
+    sgdisk --mbrtogpt --clear /dev/sdb
+    sgdisk --new=1:0:+20G  # create fixed size partition
+    sgdisk --new=2:0:16G   # create partition matching system ram size
+    sgdisk --largest-new=3 # create partition filling remaining space
+
+
+    # Swap configuration
+    # ----------------------------------------------------------
+    # Get swap uuid (add --label on swap to use instead)
+    swap_uuid="$(lsblk -no UUID /dev/sdb2)" # get swap uuid if no label
+    mkswap -U $swap_uuid /dev/sdb2 # make swap device
+    swapon -U $swap_uuid /dev/sdb2 # activate swap device
+
+
+    # Filesystem creation
+    # ----------------------------------------------------------
+    mkfs.ext4 /dev/sdb1  # make filesystem
+    mkfs.ext4 /dev/sdb3  # make filesystem
+
+
+    # Mount filesystems & create subvolumes
+    # ----------------------------------------------------------
+    mount defaults,x-mount.mkdir /dev/sdb1 /mnt
+    mount defaults,x-mount.mkdir /dev/sdb3 /mnt/home
 
 
 Templates:
