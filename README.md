@@ -109,8 +109,9 @@ either the template or the raw script output itself.
 
     # Mount filesystems & create subvolumes 
     # ---------------------------------------------------------- 
-    mount defaults,x-mount.mkdir /dev/sdb1 /mnt 
-    mount defaults,x-mount.mkdir,compress=lzo,space_cache,autodefrag,inode_ca...
+    mount /dev/sdb1 /mnt 
+    mount defaults,x-mount.mkdir,compress=lzo,space_cache,autodefrag, 
+        inode_cache /dev/sdb3 /mnt/home 
 
 (some comments removed... remove them all with the `--compact` command line 
 option) 
@@ -193,8 +194,6 @@ mean
 
 Another option would have been to specify a partition number 
 
-
-
     filesystem --keep    --partnum 1 --mountpoint /boot 
     filesystem --replace --partnum 2 --mountpoint / 
     filesystem --keep    --partnum 3 --mountpoint /home --encrypt 
@@ -202,8 +201,6 @@ Another option would have been to specify a partition number
 In this partnum example, the script would prompt interactively for a drive to 
 be selected. We could add this information directly to the template if we 
 wanted to 
-
-
 
     drive --devpath /dev/sda 
         filesystem --keep    --partnum 1 --mountpoint /boot 
@@ -238,11 +235,13 @@ Storage template files are really just outlines. You can indent (spaces OR
 tabs, not both, and spaces are recommended) in order to provide information 
 about which element goes where. For example 
 
-    drive 
+    drive   # oh yeah, comments are ok 
         partition --size 200M 
             filesystem --mountpoint /boot --fstype vfat 
         partition 
-            filesystem 
+            # filesystem  (this filesystem is commented out 
+            #              but the script knows we need one 
+            #              there so it will make one) 
                 subvolume --mountpoint / 
                 subvolume --mountpoint /home 
 
@@ -558,11 +557,6 @@ types. The types listed are the only valid types (drive, partition, etc.).
 Identifies the storage item (drive, partition, filesystem) as a bootable 
 device. May not always impact the item initialization.
 
-`--drivekeep `
-
-For drives, prevents any existing partitions from being removed, even without 
-explicitly identifying them with noclobber.
-
 `--encrypt `
 
 Used on storage items that may be children of encryption to imply an encryption 
@@ -575,13 +569,6 @@ Keen an existing partition. The partition may be specified by --partnum (1),
 size (assuming and exact match of label or size). If using code to match an 
 existing partition, either the sgdisk short code or the long code version of it 
 may be used. Run __initializeRulesets --listcodes to list all codes.
-
-`--noclobber `
-
-Prevents changes to the item that matches the devpath specified. For instance, 
-if --noclobber is set on a drive entry, and the path of the drive is identified 
-as /dev/sda, then no changes will be made to /dev/sda or any child elements of 
-/dev/sda.
 
 `--replace `
 
@@ -601,12 +588,6 @@ The partition GUID code as used by sgdisk. Can be either an sgdisk two-byte hex
 code such as 'ef02', or a full GUID type code such as 
 'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7' (see 'man sgdisk' and 'sgdisk -L'). Note 
 that this is *not* a UUID.
-
-`--description 'DESCRIPTION'`
-
-A short description that can be reported during script execution. Currently not 
-utilized. Standard shell-script style comments prefixed by a # sign are also 
-acceptable in the storage definition file and will be ignored by the script.
 
 `--devpath /DEV/PATH`
 

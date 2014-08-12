@@ -105,8 +105,9 @@ Note that it does *not* automatically run this script. You may save it via stand
 
     # Mount filesystems & create subvolumes
     # ----------------------------------------------------------
-    mount defaults,x-mount.mkdir /dev/sdb1 /mnt
-    mount defaults,x-mount.mkdir,compress=lzo,space_cache,autodefrag,inode_cache /dev/sdb3 /mnt/home
+    mount /dev/sdb1 /mnt
+    mount defaults,x-mount.mkdir,compress=lzo,space_cache,autodefrag,\
+        inode_cache /dev/sdb3 /mnt/home
 
 (some comments removed... remove them all with the `--compact` command line option)
 
@@ -190,7 +191,6 @@ to help the script figure out which partitions we mean
 Another option would have been to specify a partition
 number
 
-
     filesystem --keep    --partnum 1 --mountpoint /boot
     filesystem --replace --partnum 2 --mountpoint /
     filesystem --keep    --partnum 3 --mountpoint /home --encrypt
@@ -198,7 +198,6 @@ number
 In this partnum example, the script would prompt interactively for a
 drive to be selected. We could add this information directly to the
 template if we wanted to
-
 
     drive --devpath /dev/sda
         filesystem --keep    --partnum 1 --mountpoint /boot
@@ -1399,10 +1398,6 @@ __initializeRulesets () {
                      to imply an encryption entry in the template file
                      without adding it explicitly."
 
-    drivekeep            "For drives, prevents any existing partitions from being
-                     removed, even without explicitly identifying them with
-                     noclobber."
-
     keep            "Keen an existing partition. The partition may be specified
                      by --partnum (1), --devpath (/dev/sda1), or a matching
                      unique value such as label, code, or even size (assuming
@@ -1410,12 +1405,6 @@ __initializeRulesets () {
                      an existing partition, either the sgdisk short code or
                      the long code version of it may be used. Run $0 --listcodes
                      to list all codes."
-
-    noclobber       "Prevents changes to the item that matches the devpath
-                     specified. For instance, if --noclobber is set on a drive
-                     entry, and the path of the drive is identified as
-                     /dev/sda, then no changes will be made to /dev/sda or any
-                     child elements of /dev/sda."
 
     replace         "For partitions, tries to match an existing partition based
                      on partnum, devpath, code, label or size and then creates
@@ -1434,13 +1423,6 @@ __initializeRulesets () {
                      type code such as 'EBD0A0A2-B9E5-4433-87C0-68B6B72699C7'
                      (see 'man sgdisk' and 'sgdisk -L'). Note that this is *not*
                      a UUID."
-
-    description     "'DESCRIPTION'
-                     A short description that can be reported during script
-                     execution. Currently not utilized. Standard shell-script
-                     style comments prefixed by a # sign are also acceptable in
-                     the storage definition file and will be ignored by the
-                     script."
 
     devpath         "/DEV/PATH
                      The device path, for instance /dev/sda for a drive,
@@ -2230,76 +2212,6 @@ __inflateStructure () {
     }
     while ! inflateLoop; do :; done
 }
-#__inferMissingElements () {
-#    . <(localopts \
-#        input_array: \
-#        fields_array: \
-#        inherit_array: \
-#        valid_array: \
-#        infer_off_option:
-#        )
-#
-#    ${(P)infer_off_option:-false} && return 0
-#
-#    # nonzero exit status breaks us out of the loops until
-#    # all inferences pass without making changes.
-#    # this is not the optimal solution as race conditions
-#    # can occur if the tests were to revert previous changes,
-#    # but it's ok for now...
-#
-#    inferDrive
-#
-#    inferRecords () {
-#        . <(localopts start_at:)
-#        typeset -a children
-#        children=($(getChildren ${start_at:-}))
-#        typeset index
-#        for index in $children
-#        do
-#            makeActive $index
-#            inferParentPartition     || return 1
-#            inferParentEncryption    || return 1
-#            inferParentFilesystem    || return 1
-#            inferChildFilesystem     || return 1
-#            $0 --start_at $index     || return 1
-#        done
-#    }
-#
-#    inferInheritedValues () {
-#        . <(localopts start_at:)
-#        typeset -a children
-#        children=($(getChildren ${start_at:-}))
-#        typeset index
-#        for index in $children
-#        do
-#            makeActive $index
-#            #inferNoclobber         || return 1
-#            #inferSsd               || return 1
-#            inferClaimFromDescendant || return 1
-#            inferInheritUp          || return 1
-#            inferInheritDown        || return 1
-#            $0 --start_at $index    || return 1
-#        done
-#    }
-#
-#    inferTypeSpecificValues () {
-#        . <(localopts start_at:)
-#        typeset -a children
-#        children=($(getChildren ${start_at:-}))
-#        typeset index
-#        for index in $children
-#        do
-#            makeActive $index
-#            inferFilesystemValues   || return 1
-#            inferPartitionValues    || return 1
-#            $0 --start_at $index    || return 1
-#        done
-#    }
-#
-#    while ! inferRecords; do :; done
-#    while ! inferInheritedValues; do :; done
-#    while ! inferTypeSpecificValues; do :; done
-#}
 __reorderPartitions () {
     # move any --size max partition to end of siblings
     # so that it is made last by partitioning command
@@ -4390,22 +4302,8 @@ genPartitions () {
             
             sectionHeader partitions
 
-            if ! activeIsSet noclobber
-            then
-
-                msg1="# backup existing partition table"
-                msg2="# erase everything on drive!"
-                msg3="# convert if required, then create new gpt structure"
-                # "sgdisk --zap-all ${ACTIVE[devpath]} $msg2" 
-                eval $outputvar'+=(
-                "backupdir=\$(mktemp --tmpdir=/tmp -d part-backup-XXX)"
-                "backupfile=\"\$backupdir/${ACTIVE[devpath]//\//_}_backup\""
-                "sgdisk --backup=\$backupdir $msg1"
-                "print \"Partition table backed up to \$backupdir\" 1>&2"
-                "sgdisk --mbrtogpt --clear ${ACTIVE[devpath]}   $msg3"
-                )'
-
-            elif activeIsSet noclobber
+            # is noclobber
+            if [[ -n ${STORAGE[(I)*keep]} || -n ${STORAGE[(I)*replace]} ]]
             then
 
                 eval $outputvar'+=(
@@ -4414,6 +4312,23 @@ genPartitions () {
                 "# in their present state via the --noclobber option, so NO full"
                 "# drive wipe/partition structure recreation will be performed."
                 )'
+
+            # has no noclobber settings
+            else
+
+                msg1="# backup existing partition table"
+                msg2="# erase everything on drive!"
+                msg3="# nuke from orbit, just to be sure"
+                msg4="# create new gpt structure"
+                eval $outputvar'+=(
+                "backupdir=\$(mktemp --tmpdir=/tmp -d part-backup-XXX)"
+                "backupfile=\"\$backupdir/${ACTIVE[devpath]//\//_}_backup\""
+                "sgdisk --backup=\$backupdir $msg1"
+                "print \"Partition table backed up to \$backupdir\" 1>&2"
+                "sgdisk --zap-all ${ACTIVE[devpath]} $msg3" 
+                "sgdisk --mbrtogpt --clear ${ACTIVE[devpath]} $msg4"
+                )'
+
             fi
 
         elif [[ ${ACTIVE[type]} == partition ]] && ! activeIsSet noclobber
