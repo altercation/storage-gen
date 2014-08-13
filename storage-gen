@@ -1,8 +1,5 @@
 #!/usr/bin/env zsh
 
-# for alpha test warning
-DEVSTRING=es@skylla
-
 SUMMARY=$(<< \
 '------------------------------------------------------------------------------'
 WARNING: This code is under live development RIGHT NOW...
@@ -401,9 +398,7 @@ __MAIN () {
 
     __processScriptOptions $@
 
-    # If not me, or root, or on another system, warn unless
-    # user adds --alpha option
-    ${${${:-$USERNAME@$HOST}:#DEVSTRING}:+__alphaWarning}
+    __alphaWarning
 
 
     track __initializeRulesets
@@ -443,6 +438,8 @@ __MAIN () {
 
     [[ -n ${FILERAW:-} ]] || { # check for debugsource usage
 
+    # handle path variations (absolute, relative, remote)
+    # and output a normalized local absolute path
     track __fileLocate \
         --input_filepath    INPUTFILE   \
         --output_filepath   SOURCEFILE  \
@@ -450,21 +447,29 @@ __MAIN () {
         --debugmode         DEBUG       \
         --root              SCRIPTROOT
 
+    # read the raw file into an array for processing
     track __fileRead                    \
         --filepath          SOURCEFILE  \
         --output_array      FILERAW   
 
     }
 
+    # strip out comments and escaped newlines
+    # also adds in the --indent value for each valid line
     track __fileClean                   \
         --file_raw_array    FILERAW     \
-        --output_array      SOURCEDATA
+        --output_array      FILECLEAN 
 
+    # convert the cleaned file data to a tree structured
+    # associative array
     track __fileConvertToArray          \
         --fields_array      FIELDS      \
-        --input_array       SOURCEDATA  \
+        --input_array       FILECLEAN   \
         --output_array      STORAGE
 
+    # working outwards from each storage type  record in the
+    # array, move fields that belong elsewhere to new or
+    # existing records, reshuffling and creating as needed
     track __inflateStructure            \
         --storage_array     STORAGE     \
         --fields_array      FIELDS      \
@@ -475,6 +480,8 @@ __MAIN () {
         --inherit_array     INHERIT     \
         --valid_array       VALID
 
+    # limited application of defaults to missing required fields,
+    # for example: filesystem --fstype and swap partition --size
     track __assumeValues                \
         --storage_array     STORAGE     \
         --fields_array      FIELDS      \
@@ -482,6 +489,9 @@ __MAIN () {
         --valid_array       VALID       \
         --infer_off_option  INFEROFF
 
+    # unless we want more verbose output in the tree display
+    # strip out some of the extra metadata here (notes, etc.)
+    # TODO: could move this into the tree print function?
     track __scrubStructures             \
         --storage_array     STORAGE     \
         --children_array    CHILDREN    \
@@ -489,6 +499,9 @@ __MAIN () {
         --siblings_array    SIBLINGS    \
         --valid_array       VALID
 
+    # check that basic relationships and required values are
+    # present (based on rulesets)
+    # TODO: again, consider this after partition selection
     track __validateStructures          \
         --children_array    CHILDREN    \
         --required_array    REQUIRED    \
@@ -496,6 +509,9 @@ __MAIN () {
         --input_array       STORAGE     \
         --valid_array       VALID
 
+    # confirm existing, infer or query devpath values
+    # for each drive. if not ignoring the environment, then
+    # confirm valid choices or preselection in template.
     track __identifyDrives              \
         --drives_array      DRIVES      \
         --input_array       STORAGE     \
@@ -503,6 +519,10 @@ __MAIN () {
         --noquery_env       GUESS       \
         --ignore_env        ENVIRON
 
+    # confirm existing, infer or query devpath/partnum values
+    # for each noclobber (keep/replace) partition.  if not
+    # ignoring the environment, then confirm valid choices or
+    # preselection in template.
     track __identifyExistingPartitions  \
         --drives_array      DRIVES      \
         --input_array       STORAGE     \
@@ -510,18 +530,32 @@ __MAIN () {
         --noquery_env       GUESS       \
         --ignore_env        ENVIRON
 
+    # confirm existing, infer or query devpath/partnum values
+    # for each new (no keep or replace) partition.  if not
+    # ignoring the environment, then confirm valid choices or
+    # preselection in template.
     track __identifyPartitions          \
         --drives_array      DRIVES      \
         --input_array       STORAGE     \
         --blockenv_array    BLOCKENV    \
         --ignore_env        ENVIRON
 
+    # complete filling out of devpaths for each storage
+    # element. TODO: could skip this and make devpathing
+    # a function... may be better?
     track __identifyOtherDevicePaths    \
         --input_array       STORAGE
 
+    # resort partitions in the array to reflect their
+    # partition numbers for clarity and to ensure that
+    # max-size partitions are listed last
+    # TODO: should make this ENTIRELY cosmetic and
+    # add a max/no-max check in the genPayload function
     track __reorderPartitions           \
         --input_array       STORAGE 
 
+    # create the actual script output with partitioning,
+    # filesystem creation, encryption and mounting commands
     track __genPayload                  \
         --input_array       STORAGE     \
         --outputvar         PAYLOAD     \
@@ -533,12 +567,17 @@ __MAIN () {
         --warning_option    WARNOFF     \
         --ignore_env        ENVIRON
 
+    # optionally print out a tree representation of the
+    # final composed structure
     track __printTree                   \
         --input_array       STORAGE     \
         --tree_option       TREE        \
         --input_filename    INPUTFILE   \
         --input_filepath    SOURCEFILE
 
+    # by default (and optionally with the --force option)
+    # output the script to standard out (with the --output
+    # command line option it is saved to the filename provided)
     ((   ${TREE:-false}                 \
     ||   ${ENVDEBUG:-false} )           \
     && ! ${FORCE:-false}    ) ||        {
@@ -5009,7 +5048,13 @@ __listTemplates () {
     print 1>&2
 }
 __alphaWarning () {
-    ${ALPHA:-false} && return 0
+    # If not me, or root, or on another system, warn unless
+    # user adds --alpha option
+
+    # me on dev machine
+    DEVSTRING=es@skylla
+    
+    ${ALPHA:-false} || [[ -z ${${:-$USERNAME@$HOST}:#$DEVSTRING} ]] && return 0
     __usage --mini
     warn "Hello, not me: this is hard core alpha code.
           Please read the readme and maybe glance at the sgdisk manual
