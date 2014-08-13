@@ -2307,8 +2307,6 @@ __reorderPartitions () {
     do
         sortPartitions --on_drive $drive
     done
-    debugDump
-    exit
 }
 __reorderPartitions_OLD () {
     # move any --size max partition to end of siblings
@@ -3205,7 +3203,7 @@ __identifyPartitions () {
 
     processPartitions () {
 
-        . <(localopts start_at: partnum:)
+        . <(localopts start_at: partnum: max lastpartval:)
 
         typeset -i p=$partnum
 
@@ -3214,16 +3212,26 @@ __identifyPartitions () {
         do
             makeActive $record
 
+            if ${max:-false}
+            then
+                sizeTest () { [[ ${ACTIVE[size]} == max ]] }
+            else
+                sizeTest () { [[ ${ACTIVE[size]} != max ]] }
+            fi
+
             # need to check if there is an existing device path or partnum
             # skipping noclobber partitions, since we've just deal with them
             if [[ ${ACTIVE[type]} == partition ]] \
-                && ! activeIsNoclobber
+               && sizeTest && ! activeIsNoclobber
             then
                 setActive devpath $drivepath$((++p))
                 setActive partnum $p
             fi
+            
+            [[ -n ${lastpartval:-} ]] && {
+            (( ${p:-0} > ${(P)lastpart:-0} )) && eval $lastpartval'=$p' }
 
-            $0 --start_at $record --partnum $p
+            $0 --start_at $record --partnum $p ${lastpartval:+--lastpartval }${lastpartval:-}
         done
 
     }
@@ -3264,7 +3272,10 @@ __identifyPartitions () {
         else
             partnum=0
         fi
-        processPartitions --start_at ${drive} --partnum $partnum
+        # do non max partitions first, max last
+        typeset lastpart
+        processPartitions --start_at ${drive} --partnum $partnum --lastpartval lastpart
+        processPartitions --start_at ${drive} --partnum $lastpart --max
     done
 }
 __identifyOtherDevicePaths () {
