@@ -5,7 +5,8 @@ DEVSTRING=es@skylla
 
 SUMMARY=$(<< \
 '------------------------------------------------------------------------------'
-WARNING: This code is under live development RIGHT NOW... this notice will removed once it reaches a beta release state.
+WARNING: This code is under live development RIGHT NOW...
+this notice will be removed once it reaches a beta release state.
 
 Name: storage-gen
 
@@ -512,7 +513,8 @@ __MAIN () {
     track __identifyPartitions          \
         --drives_array      DRIVES      \
         --input_array       STORAGE     \
-        --blockenv_array    BLOCKENV 
+        --blockenv_array    BLOCKENV    \
+        --ignore_env        ENVIRON
 
     track __identifyOtherDevicePaths    \
         --input_array       STORAGE
@@ -528,7 +530,8 @@ __MAIN () {
         --mountroot         MOUNTROOT   \
         --multipass         MULTIPASS   \
         --comments_option   COMPACT     \
-        --warning_option    WARNOFF
+        --warning_option    WARNOFF     \
+        --ignore_env        ENVIRON
 
     track __printTree                   \
         --input_array       STORAGE     \
@@ -2648,34 +2651,42 @@ __identifyDrives () {
 
     . <(localopts drives_array: blockenv_array: input_array: ignore_env: noquery_env:)
 
-    typeset -A env_staging
-    env_staging=("${(@Pkv)blockenv_array}")
-    
-    typeset -A types_actual
-    : ${(AA)types_all::=${(kv)env_staging[(I)*type]}}
-
-    typeset -A mountpoints_actual
-    : ${(AA)mountpoints_all::=${(kv)env_staging[(I)*mountpoint]}}
-
-    # list of available drives on system
-    typeset -a drives_all
-    drives_all=(${(k)types_all[(R)disk]%,type})
-
-    # list of mounted devices trimmed down to drive paths
-    typeset mounted_drives
-    mounted_drives=(${(k)mountpoints_all%[0-9]##,mountpoint})
-
-    # list of external drives
-    typeset external_drives
-    external_drives=(${(k)env_staging[(I)*rm]%,rm})
-
-    # list of available unmounted drives
-    typeset available_drives
-    available_drives=(${drives_all:|mounted_drives})
-
     # drives that were provides via the --drives cli option
     typeset -a command_line_drives
     command_line_drives=(${(P)drives_array})
+
+    if ${(P)ignore_env:-false}
+    then
+        typeset available_drives
+        available_drives=(${(P)drives_array})
+    # live environment
+    else
+        typeset -A env_staging
+        env_staging=("${(@Pkv)blockenv_array}")
+        
+        typeset -A types_actual
+        : ${(AA)types_all::=${(kv)env_staging[(I)*type]}}
+
+        typeset -A mountpoints_actual
+        : ${(AA)mountpoints_all::=${(kv)env_staging[(I)*mountpoint]}}
+
+        # list of available drives on system
+        typeset -a drives_all
+        drives_all=(${(k)types_all[(R)disk]%,type})
+
+        # list of mounted devices trimmed down to drive paths
+        typeset mounted_drives
+        mounted_drives=(${(k)mountpoints_all%[0-9]##,mountpoint})
+
+        # list of external drives
+        typeset external_drives
+        external_drives=(${(k)env_staging[(I)*rm]%,rm})
+
+        # list of available unmounted drives
+        typeset available_drives
+        available_drives=(${drives_all:|mounted_drives})
+    fi
+
 
     # first order children are all drives
     typeset drive
@@ -3224,7 +3235,7 @@ selectPartitionUnderDrive () {
     fi
 }
 __identifyPartitions () {
-    . <(localopts blockenv_array: input_array:)
+    . <(localopts blockenv_array: input_array: ignore_env:)
 
     processPartitions () {
 
@@ -3266,7 +3277,13 @@ __identifyPartitions () {
     do
         makeActive $drive
         drivepath=${ACTIVE[devpath]}
-        maxpart=${${(Onu)${(Pk)${:-${blockenv_array}[(I)$drivepath*]}}//(#b)(#s)$drivepath([0-9]#),*/$match}[1]:-}
+
+        if ${(P)ignore_env:-false}
+        then
+            maxpart=0
+        else
+            maxpart=${${(Onu)${(Pk)${:-${blockenv_array}[(I)$drivepath*]}}//(#b)(#s)$drivepath([0-9]#),*/$match}[1]:-}
+        fi
 
         # now scan all existing partitions and see if there is an existing partnum
 
@@ -3564,7 +3581,7 @@ __printTree () {
 }
 __genPayload () {
 
-    . <(localopts input_array: outputvar: sourcefile: infilename: mountroot: multipass: comments_option: warning_option:)
+    . <(localopts input_array: outputvar: sourcefile: infilename: mountroot: multipass: comments_option: warning_option: ignore_env:)
 
     # prepare arrays
     typeset -ag $outputvar
@@ -3625,7 +3642,7 @@ __genPayload () {
         fi
     }
 
-    genPartitions
+    genPartitions --ignore_env $ignore_env
     genEncryption --multipass $multipass
     genSwap
     genFilesystem
@@ -4267,7 +4284,7 @@ within it (i.e. there is no explicit parameter option passing on these)
 ------------------------------------------------------------------------------
 genPartitions () {
 
-    . <(localopts start_at: )
+    . <(localopts start_at: ignore_env:)
 
     typeset -a children; children=($(getChildren ${start_at:-}))
 
@@ -4308,8 +4325,33 @@ genPartitions () {
                 )'
 
             fi
+        fi
 
-        elif [[ ${ACTIVE[type]} == partition ]] && ! activeIsNoclobber
+        if [[ ${ACTIVE[type]} == partition ]] && activeIsSet replace
+        then
+
+            ${(P)ignore_env:-false} && fail "Cannot process --replace
+            partitions while --$ignore_env is set."
+            if [[ -n ${BLOCKENV:-} && -n ${BLOCKENV[${ACTIVE[devpath]},start]:-} ]]
+            then
+                msg=""
+                [[ $USERNAME == root ]] || msg=", most probably
+                because you are not running as root"
+                fail "Partition entry with --replace partition has
+                been assigned to $devpath, but we are unable to
+                read and start/end partition data$msg."
+            fi
+            sgdisk_msg="# Delete existing partition, recreate it"
+            sgdisk_cmd="sgdisk"
+            sgdisk_cmd+=" --delete=${ACTIVE[partnum]}"
+            sgdisk_cmd+=" --new=${ACTIVE[partnum]}:"
+            sgdisk_cmd+="$BLOCKENV[$ACTIVE[devpath],start]}:"
+            sgdisk_cmd+="$BLOCKENV[$ACTIVE[devpath],end]} "
+            sgdisk_cmd+="${PARENT[devpath]}"
+            eval $outputvar'+=("$sgdisk_cmd $sgdisk_msg")'
+        fi
+
+        if [[ ${ACTIVE[type]} == partition ]] && ! activeIsNoclobber
         then
 
             sgdisk_cmd="sgdisk"
@@ -4343,7 +4385,7 @@ genPartitions () {
             [[ -n "${ACTIVE[label]:-}" ]] && \
                 sgdisk_cmd+=" --change-name=${ACTIVE[partnum]}:${(q-)ACTIVE[label]}"
 
-            eval $outputvar'+=( "$sgdisk_cmd $sgdisk_msg")'
+            eval $outputvar'+=("$sgdisk_cmd $sgdisk_msg")'
 
         fi
 
@@ -4351,7 +4393,7 @@ genPartitions () {
 
     # we processed one set of siblings, now walk down each branch
     for record in $children; do
-        $0 --start_at $record
+        $0 --start_at $record --ignore_env $ignore_env
     done
 }
 genEncryption () {
