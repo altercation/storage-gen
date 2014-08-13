@@ -527,7 +527,7 @@ __MAIN () {
         --infilename        INPUTFILE   \
         --mountroot         MOUNTROOT   \
         --multipass         MULTIPASS   \
-        --comments_option   MINIFY      \
+        --comments_option   COMPACT     \
         --warning_option    WARNOFF
 
     track __printTree                   \
@@ -539,9 +539,9 @@ __MAIN () {
     ((   ${TREE:-false}                 \
     ||   ${ENVDEBUG:-false} )           \
     && ! ${FORCE:-false}    ) ||        {
-    track __payloadPrint                \
+    track __printPayload                \
         --input_array       PAYLOAD     \
-        --comments_option   MINIFY      }
+        --comments_option   COMPACT     }
 
 }
 __assumeValues () {
@@ -2297,6 +2297,8 @@ __reorderPartitions () {
             newindex=${partition%%[0-9]#}${${(@nv)partnums}[(i)$partnums[$partition,partnum]]}
             eval ${(k)STORAGE[(I)TEMP,$partition,*]//(#b)(TEMP,)($partition)(,*)/STORAGE[$newindex$match[3]]=${(q-)STORAGE[TEMP,${match[2]}${match[3]}]}; }
         done
+        # remove the temp values
+        eval ${(k)STORAGE[(I)TEMP,*]//(#m)*/unset \"STORAGE[$MATCH]\"; }
     }
 
     typeset -a drives
@@ -3548,7 +3550,7 @@ __genPayload () {
 
     # output script header
     eval $outputvar'+=(
-    "#!/usr/bin/env zsh\n"
+    "#!/usr/bin/env zsh"
     "$__\n# Storage initialization commmands\n$__"
     "# turn off comments in this output with the following option"
     "# \"$SCRIPTNAME --${(L)comments_option}\"\n$__\n#"
@@ -3558,14 +3560,15 @@ __genPayload () {
     )'
 
     # script reports/warnings, etc.
-    ${(P)comments_option:-false} || {
+    if ${VERBOSE:-false} && ! ${(P)comments_option:-false}
+    then
         eval $outputvar'+=( "#\n$__" ${(f)^"$(reportLog)"})'
-    }
+    fi
 
     ${(P)warning_option:-false} || {
     typeset warn
     warn="WARNING - hide this with "
-    warn+="\"$SCRIPTNAME --${(L)warning_option}\""
+    warn+="\"$SCRIPTNAME --${(L)warning_option}\" or \"$SCRIPTNAME -${(U)warning_option:0:1}\""
     ${(P)comments_option:-false} && {
     eval $outputvar'+=(":\n: $warn")' }
     eval $outputvar'+=(
@@ -3606,12 +3609,12 @@ __genPayload () {
     genMounts
 
 }
-__payloadPrint () {
+__printPayload () {
     . <(localopts input_array: comments_option:)
     payload="$(print -l -- ${(P)input_array})"
     print 1>&2
     ${(P)comments_option:-false} && { 
-        print -l -- ${${(@f)payload}//(#s)\# */}
+    print -l -- ${${(@f)payload}//(#s)\#([^!]|(#e))*/}
     } || print -l -- "${(@)payload}"
 }
 __usage () {
@@ -4063,6 +4066,22 @@ descendantOrSelfIsNoclobber () {
     done
     return 1
 }
+ancestorOrSelfIsNoclobber () {
+    . <(localopts index: field: array:)
+    array=${array:-STORAGE}
+    index=${index:-${1:-}}
+    [[ -n ${index:-} ]] || fail "$0 missing index"
+    typeset ncfield
+    while [[ -n ${index:-} ]]
+    do
+        for ncfield in ${=NOCLOBBER[partition]};
+        do
+            isSetByIndex --index $index --field $ncfield && return 0
+        done
+        index=${index%%,#[0-9]#}
+    done
+    return 1
+}
 
 activeIsNoclobber () {
     indexIsNoclobber --index ${ACTIVE[index]}
@@ -4081,6 +4100,18 @@ setActive () {
 }
 unsetActive () {
     unsetByIndex --index ${ACTIVE[index]:-} --field $1
+}
+isSetByIndex () {
+    # return true if value is set, even if non null
+    # takes parameter name, not value, natch
+    . <(localopts index: field: array:)
+    array=${array:-STORAGE}
+    [[ -n ${index:-} && -n ${field:-} ]] || \
+        fail "bad call to $0 with missing
+            ${index:-index}
+            ${field:-field}
+            "
+    eval '(( ${+'$array'[$index,$field]} )) && return 0 || return 1'
 }
 setByIndex () {
     . <(localopts index: field: array: value:)
@@ -4229,12 +4260,12 @@ genPartitions () {
             # is noclobber
             if descendantOrSelfIsNoclobber --index $record
             then
-
+                typeset ncvalues
+                ncvalues="${:-'--${^=NOCLOBBER[partition]}'}"
                 eval $outputvar'+=(
                 "\n\n# DRIVE - ${ACTIVE[devpath]}\n$__"
-                "# Some/all contents of this drive are set to remain untouched"
-                "# in their present state via the --noclobber option, so NO full"
-                "# drive wipe/partition structure recreation will be performed."
+                "# DRIVE CONTENTS PRESERVED (no drive wipe performed) due to"
+                "# $ncvalues having been set on partition entries"
                 )'
 
             # has no noclobber settings
@@ -4350,7 +4381,8 @@ genEncryption () {
             lukso+="${s::=${ACTIVE[ssd]+${OPTIONS[luks,open,ssd]:-}}}${s:+ }"
             lukso+="${ACTIVE[devpath]} "
             lukso+="${(q-)ACTIVE[label]:-${ACTIVE[devpath]//\//_}} "
-            activeIsoclobber || eval $outputvar'+=("\n# LUKS formatting" "$luksf")'
+            ancestorOrSelfIsNoclobber --index $record \
+                || eval $outputvar'+=("\n# LUKS formatting" "$luksf")'
             eval $outputvar'+=("\n# LUKS open" "$lukso")'
         fi
 
@@ -4400,8 +4432,8 @@ genSwap () {
             mkswap+="$swapid ${ACTIVE[devpath]}"
             swapon+="$swapid $swapssd${ACTIVE[devpath]}"
 
-            activeIsNoclobber || \
-                eval $outputvar'+=("$mkswap # make swap device")'
+            ancestorOrSelfIsNoclobber --index $record \
+                || eval $outputvar'+=("$mkswap # make swap device")'
             eval $outputvar'+=("$swapon # activate swap device")'
 
         fi
@@ -4425,7 +4457,8 @@ genFilesystem () {
 
         makeActive $record
 
-        if [[ ${ACTIVE[type]} == filesystem ]] && ! activeIsNoclobber
+        if [[ ${ACTIVE[type]} == filesystem ]] \
+            && ! ancestorOrSelfIsNoclobber --index $record
         then
 
             sectionHeader filesystem
@@ -4469,10 +4502,8 @@ genMounts () {
         makeActive $record
         mountpath="${${:-${(P)mountroot%/}/${ACTIVE[mountpoint]#/}}%/}"
 
-        [[ -n ${STORAGE[(I)$record*noclobber]} ]] \
-            && noclobber=true  || noclobber=false
-
-        if [[ ${ACTIVE[type]} != subvolume ]] && ! $noclobber ; then
+        if [[ ${ACTIVE[type]} != subvolume ]]
+        then
             mountopts=()
             mountopts+=(
                 "${OPTIONS[mount]}"
