@@ -396,13 +396,21 @@ preloading all subsequent functions, traps, aliases)
 
 __MAIN () {
 
+    # read the command line opts (provided to the __MAIN function
+    # and subsequently passed to this function again and convert
+    # to global parameters
     __processScriptOptions $@
 
+    # terra incognita warning
     __alphaWarning
 
-
+    # read in the rulesets for block devices structures, values and
+    # relationships. this determines the expansion and validition
+    # proecesses later
     track __initializeRulesets
 
+    # drop out for usage/help. usage reads data from the rulesets
+    # as well, so we run this after those have been read in.
     ${USAGE:-false}     && { __usage ; exit 0 }
     ${README:-false}    && { __usage --readme; exit 0 }
     ${ADVANCED:-false}  && { __usage --mini --advanced; exit 0 }
@@ -410,7 +418,12 @@ __MAIN () {
     ${LISTCODES:-false} && { __usage --listcodes ; exit 0 }
     ${LIST:-false}      && { __listTemplates; exit 0 }
 
-    [[ -z $SOURCEDEBUG ]] || { # prepare for debugsource usage
+    # if using a debug log file, source it here. it may contain
+    # block device environment data and (possibly) source template
+    # raw file data. whatever values are present will be used
+    # in the remainder of the script in lieu of otherwise provided
+    # or present information.
+    [[ -z $SOURCEDEBUG ]] || {
         [[ -f $SOURCEDEBUG ]] && {
             . $SOURCEDEBUG
             warn "\nUsing a simulated environment sourced using the
@@ -423,34 +436,47 @@ __MAIN () {
         }
     }
 
-    [[ -n ${BLOCKENV:-} ]] || { # check for debugsource usage
+    # skip scanning the environment if we already read in this data
+    # via the --sourcedebug option
+    [[ -n ${BLOCKENV:-} ]] || {
 
-    track __captureEnvironment          \
-        --ignore_env        ENVIRON     \
-        --output_array      BLOCKENV 
+        # write current block device environment to a structured
+        # associative array. from here on out we no longer query
+        # the live system (this is faster than repeat live queries
+        # and enables system configuration simulation via the
+        # debug log output and the --sourcedebug option).
+        track __captureEnvironment          \
+            --ignore_env        ENVIRON     \
+            --output_array      BLOCKENV 
 
     }
 
+    # dump the current environment (or the simulated environment)
+    # to a human readable format. this is a combination of lsblk
+    # and sgdisk data and makes it easier to scan both live system
+    # configuration and debug logs.
     ${ENVDEBUG:-false} && {
         debugDump --array BLOCKENV
         exit 0
     }
 
-    [[ -n ${FILERAW:-} ]] || { # check for debugsource usage
+    # skip reading in the file if we already read in this data
+    # via the --sourcedebug option
+    [[ -n ${FILERAW:-} ]] || {
 
-    # handle path variations (absolute, relative, remote)
-    # and output a normalized local absolute path
-    track __fileLocate \
-        --input_filepath    INPUTFILE   \
-        --output_filepath   SOURCEFILE  \
-        --tmpdir            SCRIPTTEMP  \
-        --debugmode         DEBUG       \
-        --root              SCRIPTROOT
+        # handle path variations (absolute, relative, remote)
+        # and output a normalized local absolute path
+        track __fileLocate \
+            --input_filepath    INPUTFILE   \
+            --output_filepath   SOURCEFILE  \
+            --tmpdir            SCRIPTTEMP  \
+            --debugmode         DEBUG       \
+            --root              SCRIPTROOT
 
-    # read the raw file into an array for processing
-    track __fileRead                    \
-        --filepath          SOURCEFILE  \
-        --output_array      FILERAW   
+        # read the raw file into an array for processing
+        track __fileRead                    \
+            --filepath          SOURCEFILE  \
+            --output_array      FILERAW   
 
     }
 
