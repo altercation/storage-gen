@@ -1,5 +1,8 @@
 #!/usr/bin/env zsh
 
+# for alpha test warning
+DEVSTRING=es@skylla
+
 SUMMARY=$(<< \
 '------------------------------------------------------------------------------'
 WARNING: This code is under live development RIGHT NOW... this notice will removed once it reaches a beta release state.
@@ -397,6 +400,11 @@ __MAIN () {
 
     __processScriptOptions $@
 
+    # If not me, or root, or on another system, warn unless
+    # user adds --alpha option
+    ${${${:-$USERNAME@$HOST}:#DEVSTRING}:+__alphaWarning}
+
+
     track __initializeRulesets
 
     ${USAGE:-false}     && { __usage ; exit 0 }
@@ -487,9 +495,6 @@ __MAIN () {
         --input_array       STORAGE     \
         --valid_array       VALID
 
-    track __reorderPartitions           \
-        --input_array       STORAGE 
-
     track __identifyDrives              \
         --drives_array      DRIVES      \
         --input_array       STORAGE     \
@@ -511,6 +516,9 @@ __MAIN () {
 
     track __identifyOtherDevicePaths    \
         --input_array       STORAGE
+
+    track __reorderPartitions           \
+        --input_array       STORAGE 
 
     track __genPayload                  \
         --input_array       STORAGE     \
@@ -901,6 +909,8 @@ __processScriptOptions () {
     )
     makeOptArray OPTS_BOOL_ALT
     OPTS_BOOL_ALT=(
+
+    ALPHA       "Whistle on past the alpha warning."
 
     DEBUG       "Turn on debug tracking; always save debug log.
                  This option turns on minimal debug tracking and rolling script
@@ -2260,6 +2270,47 @@ __inflateStructure () {
     while ! inflateLoop; do :; done
 }
 __reorderPartitions () {
+
+    # move any --size max partition to end of siblings
+    # so that it is made last by partitioning command
+    #
+    # reorder rest of partitions so they output in a
+    # logical fashion (not necessary other than it
+    # makes review of the output much easier)
+
+    . <(localopts input_array:)
+
+    sortPartitions () {
+        . <(localopts on_drive:)
+        typeset -A partnums
+        partnums=(${(kv)STORAGE[(I)$on_drive,[0-9]##,partnum]})
+        for partition in ${(k)partnums%,partnum}
+        do
+            eval ${(k)STORAGE[(I)$partition,*]//(#m)*/STORAGE[TEMP,$MATCH]=${(q-)STORAGE[$MATCH]}; unset \"STORAGE[$MATCH]\"; }
+            # add a null string to this entry key
+            # to take it out of the legitimate array
+        done
+
+        for partition in ${(k)partnums%,partnum}
+        do
+            # get new index of this partitions partnum from sorted list
+            newindex=${partition%%[0-9]#}${${(@nv)partnums}[(i)$partnums[$partition,partnum]]}
+            eval ${(k)STORAGE[(I)TEMP,$partition,*]//(#b)(TEMP,)($partition)(,*)/STORAGE[$newindex$match[3]]=${(q-)STORAGE[TEMP,${match[2]}${match[3]}]}; }
+        done
+    }
+
+    typeset -a drives
+    drives=($(getChildren))
+
+    typeset drive
+    for drive in $drives
+    do
+        sortPartitions --on_drive $drive
+    done
+    debugDump
+    exit
+}
+__reorderPartitions_OLD () {
     # move any --size max partition to end of siblings
     # so that it is made last by partitioning command
     # placing this last in the list as there could be
@@ -3345,9 +3396,12 @@ __printTree () {
     print "${i}Source filepath: ${(P)input_filepath}"
     print
     print "${i}${COLOR[default]:-}Items in [BRACKETS] have been automatically inferred.\n"
-    print "${i}Partitions in RED are to be replaced due to --replace"
-    print "${i}Partitions in YELLOW are to be retained due to --keep"
-    print "${i}Partitions in GREEN are to be newly created\n"
+    if ! ${COLOROFF:-false}
+    then
+        print "${i}Partitions in ${COLOR[red]}RED${COLOR[default]} are to be replaced due to --replace"
+        print "${i}Partitions in ${COLOR[yellow]}YELLOW${COLOR[default]} are to be retained due to --keep"
+        print "${i}Partitions in ${COLOR[green]}GREEN${COLOR[default]} are to be newly created\n"
+    fi
 
     buildTree () {
 
@@ -4846,6 +4900,16 @@ __listTemplates () {
     print "\nReading template files from $SCRIPTROOT/templates\n" 1>&2
     print -l -- $SCRIPTROOT/templates/***~(*README)(#q.:t) 1>&2
     print 1>&2
+}
+__alphaWarning () {
+    ${ALPHA:-false} && return 0
+    __usage --mini
+    warn "Hello, not me: this is hard core alpha code.
+          Please read the readme, make sure you are not doing something
+          silly like piping output directly into zsh for immediate
+          execution, and then add the '--alpha' or '-A' option to
+          run without this gratuitous warning."
+    #"Try '$SCRIPTNAME --noquery builtin-demo' to start
 }
 
 # vim: set filetype=sh : 
