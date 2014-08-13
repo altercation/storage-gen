@@ -430,7 +430,7 @@ __MAIN () {
     [[ -n ${BLOCKENV:-} ]] || { # check for debugsource usage
 
     track __captureEnvironment          \
-        --ignore_env        IGNORE      \
+        --ignore_env        ENVIRON     \
         --output_array      BLOCKENV 
 
     }
@@ -499,15 +499,15 @@ __MAIN () {
         --drives_array      DRIVES      \
         --input_array       STORAGE     \
         --blockenv_array    BLOCKENV    \
-        --noquery_env       NOQUERY     \
-        --ignore_env        IGNORE
+        --noquery_env       GUESS       \
+        --ignore_env        ENVIRON
 
     track __identifyExistingPartitions  \
         --drives_array      DRIVES      \
         --input_array       STORAGE     \
         --blockenv_array    BLOCKENV    \
-        --noquery_env       NOQUERY     \
-        --ignore_env        IGNORE
+        --noquery_env       GUESS       \
+        --ignore_env        ENVIRON
 
     track __identifyPartitions          \
         --drives_array      DRIVES      \
@@ -715,7 +715,6 @@ assumePartitionValues () {
                             continue
                         else
                             # sibling item without noclobber or size found
-                            print "found $sib"
                             return 1
                         fi
                     done
@@ -732,8 +731,6 @@ assumePartitionValues () {
                                 space on drive as all other partitions are
                                 either either fixed size or are noclobber"
                     return 1
-                else
-                    print "siblings of $ACTIVE[index] are NOT of all fixed size"
                 fi
 
                 # any other future all-sibling checks go here
@@ -831,7 +828,7 @@ __processScriptOptions () {
     HELP        "Show summary of help information.
                  Use --usage for expanded help."
 
-    NOQUERY     "No queries, make best guesses.
+    GUESS       "No interactive queries, make best guesses.
                  Don't ask for any user input. Pick first obvious choices for the
                  user, for example use first available drives (internal or as
                  provided by the --drives option), automatically match partitions
@@ -840,7 +837,7 @@ __processScriptOptions () {
 
     LIST        "List builtin $SCRIPTNAME templates."
 
-    IGNORE      "Ignore live system environment.
+    ENVIRON     "Ignore live system environment.
                  Disregards the current systems drive and partition environment.
                  Allows script to create output based on *only* the provded
                  template. No interactive queries will be run for missing drive
@@ -855,7 +852,7 @@ __processScriptOptions () {
                  Removing these does not change the functionality of the final
                  script."
 
-    QUIET       "No messages or warnings.
+    SUPPRESS    "No messages or warnings.
                  Only display actual script (or tree) output, skip informational
                  messages (the informational messages will still be output in the
                  script itself unless the --commentsoff option is selected. With
@@ -869,14 +866,7 @@ __processScriptOptions () {
                  \`watch -cn1\'. This option precludes final script output unless
                  either the --script or --output options have also been provided."
 
-    NOQUERY     "Skip all interactive queries.
-                 Normal script execution results in queries for drive and
-                 partition selection if those values have not been provided and
-                 cannot be inferred otherwise. This skips those queries. Use this
-                 with the --yes option to answer all yes/no queries with a default
-                 value."
-
-    USAGE       "Displays detail usage information.
+    USAGE       "Displays detailed usage information.
                  Adds a summary of the types of options and arguments that are valid
                  for each storage type entry. Redirect to a file or pipe through a
                  pager such as less. See also the $SCRIPTNAME README available in
@@ -900,7 +890,7 @@ __processScriptOptions () {
                  system is checked for the presence of these drives first."
 
     MOUNTROOT   "'/MOUNT/ROOT/PATH'
-                 Preinstall mountpoint root path.
+                 Preinstall mount root. Default is /mnt.
                  Set mount root directory (if not set, use the default '/mnt').
                  Argument is a valid, absolute path to an existing directory.
                  This path is used during system installation as a chroot  and
@@ -922,8 +912,11 @@ __processScriptOptions () {
                  template file content. It may be submitted with bug reports."
 
     KEEP        "Keep all existing partitions.
-                 Same as setting the --noclobber option on each drive. Prevents
-                 existing partitions from being affected."
+                 Prevents disk formatting, even if no actual
+                 '--keep' or '--replace' options have been set on
+                 partitions in the template. Without at least one partition
+                 with one of those options OR this command line option, the
+                 final script will include a disk format command."
 
     FORCE       "Force the script to always output to console.
                  This happens by default UNLESS either the --tree or --output
@@ -1153,7 +1146,8 @@ __processScriptOptions () {
     print -l -- $debug_log_header > $DEBUGLOG
 
     ${DEBUG:-false} && {
-        typset -g VERBOSE=true
+        typeset -g VERBOSE=true
+        typeset -g SUPPRESS=""
         typeset -ag ROLLING
         TRAPDEBUG () {
             for i in {1..4}
@@ -1545,7 +1539,8 @@ __initializeRulesets () {
                      tebibytes (T), or pebibytes (P), or may be a percentage
                      value which will use the specified percent of the
                      *available* space on the drive (excluding any partitions
-                     preserved using --noclobber) such as '30%'. You may also
+                     preserved using --noclobber) such as '30%'
+                     (% IS CURRENTLY UNIMPLEMNTED). You may also
                      enter 'max' as a value to use the maximum available
                      (remaining) free space after all other partitions have
                      been assigned. Using the value 'ram' will similarly set
@@ -1667,13 +1662,14 @@ __captureEnvironment () {
     # get existing partition codes
     if [[ $USERNAME == root ]]
     then
-
         # list of available partitions on system
         # (first set all_types, then pull out the partitions)
         typeset -A all_types 
         : ${(AA)all_types::=${(Pkv)${:-${output_array}[(I)*type]}}}
         typeset -a all_partitions
         all_partitions=(${(k)all_types[(R)part]%,type})
+        typeset -a all_drives
+        all_drives=(${(k)all_types[(R)disk]%,type})
 
         typeset longcode short_code
         for partition in $all_partitions
@@ -1687,10 +1683,26 @@ __captureEnvironment () {
                     eval $output_array'[$partition,shortcode]=${(u)shortcode}'
             fi
         done
+
+        # now get start and end values for each partition
+        # (for --replace partitions)
+        for drive in $all_drives
+        do
+            # if sgdisk chokes on the disk, skip it
+            if sgdisk ${partition%%[0-9]#} &>/dev/null
+            then
+        sgdump="$(sgdisk -p /dev/sda)}"
+        eval ${${${(@f)sgdump}:#[^[:space:]]*}//(#b)(#s) ##([0-9]##) ##([0-9]##) ##([0-9]##)*/$output_array+=($drive$match[1],start $match[2] $drive$match[1],end $match[3])}
+            fi
+        done
+
     else
-        warn "Skipping partition code inferrence as script is not being run as root.
-              If run as root, $SCRIPTNAME will use sgdisk to infer --noclobber
-              partition matches based on codes if present. This is non-critical."
+        warn "NOT ROOT: This script will still execute but cannot read the sgdisk code or partition start/end values. This only affects:"
+        warn "1) --keep or --replace partitions using --code to infer the
+        actual current partition"
+        warn "2) --replace partitions that will need to know the start and
+        end values, though of course in this case you'd need to be root
+        anyhow."
     fi
 
     debugCapture BLOCKENV
@@ -2857,10 +2869,11 @@ __identifyExistingPartitions () {
         (( ${(P)nummatches::=${#matched}} == 1 )) && {
             eval $result'="${(L)matched}"'
             typeset mv="${(P)${:-${blockenv_array}[$matched,$array_value_name]}}"
-            [[ -n ${matchedval} ]] && {
+            [[ -n ${matchedval:-} ]] && {
                 eval $matchedval'="$mv"'
             }
-        }
+            return 0
+        } || return 1
     }
     isExistingPartition () {
         typeset matched; [[ -n ${(L)all_parts[(R)${(L)1:-}]:-} ]]
@@ -2922,7 +2935,6 @@ __identifyExistingPartitions () {
         typeset envval
         if [[ -n ${envval::=${(P)${:-${blockenv_array}[$devpath,$envfield]}:-}} ]]
         then
-            print "Setting active $activefield to: $envval"
             setActive $activefield $envval
         else
             return 0
@@ -2986,11 +2998,6 @@ __identifyExistingPartitions () {
                         (( ${#ACTIVE[code]} > 4 )) \
                             && codetype=longcode || codetype=shortcode
                         # if we get a single match
-                        matchTypeValue \
-                            --array_value_name $codetype \
-                            --active_value ${ACTIVE[code]} \
-                            --nummatches matches \
-                            --result matchpart
                         if matchTypeValue \
                             --array_value_name $codetype \
                             --active_value ${ACTIVE[code]} \
@@ -3006,6 +3013,18 @@ __identifyExistingPartitions () {
                                     --note "${codetype%code} form GUID type
                                             code ${ACTIVE[code]}" \
                                     --newdevpath $matchpart
+                                # code was matched, so pull in any
+                                # existing label, regardless
+                                setActiveToEnvValueIfSet \
+                                    --devpath $matchpart \
+                                    --activefield label \
+                                    --envfield label
+                                # prefer partlabel, so override
+                                # label with it if present
+                                setActiveToEnvValueIfSet \
+                                    --devpath $matchpart \
+                                    --activefield label \
+                                    --envfield partlabel
                                 continue
                             else
                             fi
@@ -3093,8 +3112,8 @@ __identifyExistingPartitions () {
                                 --drives_array      DRIVES      \
                                 --input_array       STORAGE     \
                                 --blockenv_array    BLOCKENV    \
-                                --noquery_env       NOQUERY     \
-                                --ignore_env        IGNORE      \
+                                --noquery_env       GUESS       \
+                                --ignore_env        ENVIRON     \
                                 --result_var        pickpart
                             if [[ -n ${pickpart:-} ]]
                             then
@@ -3166,11 +3185,15 @@ selectPartitionUnderDrive () {
         typeset apart
         for apart in $partitions_unselected
         do
-            print -n "${ap::=${(M)apart%%[0-9]#}}: $apart (" 1>&2
+            print -n "${ap::=${(M)apart%%[0-9]#}}: $apart - " 1>&2
             print -n "SIZE: ${env_staging[$apart,size]:-} " 1>&2
+            print -n "${env_staging[$apart,shortcode]:+ CODE: }${(q-)env_staging[$apart,shortcode]:-}" 1>&2
+            [[ -z ${env_staging[$apart,shortcode]:-} ]] && {
+                print -n "${env_staging[$apart,longcode]:+ CODE: }${(q-)env_staging[$apart,longcode]:-}" 1>&2
+            }
             print -n "${env_staging[$apart,partlabel]:+ PARTLABEL: }${(q-)env_staging[$apart,partlabel]:-}" 1>&2
             print -n "${env_staging[$apart,mountpoint]:+ MOUNTPOINT: }${env_staging[$apart,mountpoint]:-}" 1>&2
-            print ")"
+            print 1>&2
         done
         print "\nq: Quit\n" 1>&2
 
@@ -3216,9 +3239,9 @@ __identifyPartitions () {
 
             if ${max:-false}
             then
-                sizeTest () { [[ ${ACTIVE[size]} == max ]] }
+                sizeTest () { [[ ${ACTIVE[size]:-} == max ]] }
             else
-                sizeTest () { [[ ${ACTIVE[size]} != max ]] }
+                sizeTest () { [[ ${ACTIVE[size]:-} != max ]] }
             fi
 
             # need to check if there is an existing device path or partnum
@@ -4655,7 +4678,7 @@ debugDump () {
                 --text "${(r.$padding...)key} : ${(P)${:-${array}[$key]}}"
         done
     fi
-    if ${TREE:-false}
+    if ${TREE:-false} && [[ -n ${STORAGE:-} ]]
     then
         __printTree                   \
             --input_array       STORAGE     \
@@ -4700,7 +4723,7 @@ teelog () {
         typeset -ag REPORT_${(U)category}
         eval REPORT_${(U)category}'+=("${${=@}}")'
     fi
-    if ! ${noprint:-false} && ! ${QUIET:-false} && \
+    if ! ${noprint:-false} && ! ${SUPPRESS:-false} && \
     [[ ${VERBOSE:-false} == ${verbose:-${VERBOSE:-false}} ]]
     then
         if ! { ${verbose:-false} && ! ${VERBOSE:-false} }
@@ -4932,7 +4955,7 @@ debugCapture () {
 }
 track () {
     typeset -ag ROLLCALL; ROLLCALL+=($1)
-    ${QUIET:-false} || {
+    ${SUPPRESS:-false} || {
     print -n ${COLOR[cyan]:-} 1>&2
     print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
     print ${COLOR[default]:-} 1>&2
@@ -4947,11 +4970,11 @@ __alphaWarning () {
     ${ALPHA:-false} && return 0
     __usage --mini
     warn "Hello, not me: this is hard core alpha code.
-          Please read the readme, make sure you are not doing something
-          silly like piping output directly into zsh for immediate
-          execution, and then add the '--alpha' or '-A' option to
-          run without this gratuitous warning."
-    #"Try '$SCRIPTNAME --noquery builtin-demo' to start
+          Please read the readme and maybe glance at the sgdisk manual
+          to understand the final script output. Then run $SCRIPTNAME
+          again with the '--alpha' or '-A' option to skip this warning.
+          Or just skip the reading and run it now, but be sensible."
+    exit 1
 }
 
 # vim: set filetype=sh : 
