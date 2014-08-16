@@ -630,6 +630,8 @@ __MAIN () {
         --siblings_array        SIBLINGS    \
         --valid_array           VALID
 
+__test
+exit
     # -----------------------------------------------------------------
     # check that basic relationships and required values are
     # present (based on rulesets) - could run this AFTER
@@ -681,7 +683,6 @@ __MAIN () {
             --drives_override_  DRIVES      \
             --yes_to_all_       YES         \
             --skip_system_data_ SKIP
-    debugDump; exit
 
 #    NEED A NEW FUNCTION AND OR NEW OPTION:
 #    like "nocheck" or "skip" to skip testing which dries are valid
@@ -694,7 +695,11 @@ __MAIN () {
 #    skip means the same thing IF the template as values
 #    skip + noquery means the same thing as just
 
-
+    track   __AssignPartitions              \
+            --storage_tree_     STORAGE     \
+            --system_data_      SYSTEM      \
+            --yes_to_all_       YES         \
+            --skip_system_data_ SKIP
 
     # -----------------------------------------------------------------
     # confirm existing, infer or query devpath/partnum values
@@ -2827,94 +2832,6 @@ __validateStructures () {
 
     done
 }
-__recordsArrayAddDrivePaths () {
-    # recursively add any missing drive paths
-    # query for new/missing paths as required
-    . <(localopts input_array: pindex: earmarked: drives_array:)
-    typeset -a children
-    children=($(getChildren ${pindex:-}))
-
-    for record in $children; do
-
-        makeActive $record
-
-        # if this is a drive, then make sure we have an available device path
-        # or query for a selection.
-        if [[ ${ACTIVE[type]} == drive ]]; then
-
-            # check if we have a devpath from the storage file
-            if [[ -n ${ACTIVE[devpath]:-} ]]; then
-
-                # check if recorded path is valid, unmounted drive
-                # if not, report problem and offer to pick new one or quit
-                if ! driveIsUnmounted ${ACTIVE[devpath]:-}; then
-
-                    shrinkWrap "Drive device path listed in storage
-                    definition file is either already mounted or missing.
-                    If you wish to pick a new drive now, press 'y'.
-                    Otherwise press 'n' to exit and review current drive
-                    mounts and device availability with lsblk and mount.
-                    \nPress y to select new drive, any other key to quit."
-
-                    read -qs || { print "Quitting."; exit }
-
-                    # still here, user wants to pick a different drive
-                    # so remove current devpath
-                    eval $input_array'[$record,devpath]=""'
-                    makeActive $record
-
-                elif [[ ${+earmarked} == 1 ]] && \
-                    valueInList earmarked ${ACTIVE[devpath]}; then
-
-                    shrinkWrap "Drive device path listed in storage
-                    definition file has already been selected for another
-                    drive. If you wish to pick a new drive now, press 'y'.
-                    Otherwise press 'n' to exit and review current drive
-                    mounts and device availability with lsblk and mount.
-                    \nPress y to select new drive, any other key to quit."
-
-                    read -qs || { print "Quitting."; exit }
-
-                    # still here, user wants to pick a different drive
-                    # so remove current devpath
-                    eval $input_array'[$record,devpath]=""'
-                    makeActive $record
-
-                fi
-
-            fi
-
-            # at this point we have a null devpath or an existing path
-            # so if null, pick new one
-            if [[ -z ${ACTIVE[devpath]:-} ]]; then
-
-                # get drive
-                typeset newdrive="";
-                driveQuery  --outvar newdrive \
-                    --drives_array $drives_array \
-                    ${earmarked:+--earmarked }${earmarked:-}
-                # make sure we remember that this newly picked drive
-                # is unavailable for further selection
-                earmarked+=" $newdrive"
-
-                # barring unforeseen disaster, we have a valid drive devpath
-                if [[ -z ${(P)${${input_array}[$record,devpath]}:-} ]]; then
-                    if [[ -n ${newdrive:-} ]]; then
-                        eval $input_array'[$record,devpath]=${newdrive}'
-                    else
-                        shrinkWrap "Failed to set --devpath value for drive!"
-                        exit 1
-                    fi
-                fi
-
-            fi
-        fi
-
-        $0 --input_array $input_array --pindex $record \
-            ${earmarked:+--earmarked }${earmarked:-}
-
-    done
-}
 __AssignDrives () {
     # ensure each drive has a devpath, sourced from (in order):
     #   * --drives command line list of drive device paths
@@ -2931,8 +2848,8 @@ __AssignDrives () {
     typeset drive
     for drive in $(GetChildIndexes --array_ $storage_tree_)
     do
-        makeActive $drive
-        if [[ $ACTIVE[type] != drive ]]
+        . <(active $drive)
+        if [[ $active[type] != drive ]]
         then
             fail "Critical: top level element is not of type 'drive'."
         fi
@@ -2959,18 +2876,18 @@ __AssignDrives () {
         # -------------------------------------------------------------
         # query for devpath
         # -------------------------------------------------------------
-        elif [[ -n ${ACTIVE[devpath]:-} ]] && \
+        elif [[ -n ${active[devpath]:-} ]] && \
              (  ${(P)skip_system_data_:-false} ||
                 assignDrives__queryForDrive \
                     --system_data_ $system_data_    \
-                    --test_valid $ACTIVE[devpath]   \
+                    --test_valid $active[devpath]   \
                     --yes_to_all ${(P)yes_to_all_:-false} )
         then
             noteByIndex                 \
                 --array $storage_tree_  \
-                --index $ACTIVE[index]  \
+                --index $active[index]  \
                 --note "Retaining existing devpath value
-                        \($ACTIVE[devpath]\)"
+                        ($active[devpath])"
         # -------------------------------------------------------------
         # *) NO command line drives
         # *) TEMPLATE devpath is either missing or INVALID
@@ -2997,26 +2914,27 @@ __AssignDrives () {
         # -------------------------------------------------------------
         else
             fail "Missing devpath for drive $drive and the
-                  --$skip_system_data_ option is set, so no query
-                  will be run to select a new drive. Either edit the
-                  template to add a --devpath value, use the
-                  --drives command line option to list drive
-                  devpaths you wish to use, or run again without the
-                  --$skip_system_data"
+            --${(L)skip_system_data_} option is set, so no query
+            will be run to select a new drive. Either edit the
+            template to add a --devpath value, use the
+            --drives command line option to list drive
+            devpaths you wish to use, or run again without the
+            --${(L)skip_system_data_} command line option."
         fi
         # if we came out of the conditional with a new devpath,
         # assign it to this and all other occurences
         if [[ -n ${new_devpath:-} && 
-              ${new_devpath:-} != ${ACTIVE[devpath]:-} ]]
+              ${new_devpath:-} != ${active[devpath]:-} ]]
         then
             assignDrives__replaceAllDevpathOccurences   \
                 --storage_tree_  $storage_tree_         \
-                --old_devpath    "${ACTIVE[devpath]:-}" \
+                --old_devpath    "${active[devpath]:-}" \
                 --new_devpath    $new_devpath           \
                 --drive_index    $drive
-        elif [[ -z ${new_devpath:-} && -z ${ACTIVE[devpath]:-} ]]
+        elif [[ -z ${new_devpath:-} && -z ${active[devpath]:-} ]]
         then
-            fail "Failed to acquire a device path value for drive $drive."
+            fail "$0 - Unexpected drive assignment condition. Failed to
+            acquire a device path value for drive $drive."
         fi
     done
 }
@@ -3033,9 +2951,10 @@ assignDrives__replaceAllDevpathOccurences () {
         setByIndex --index $drive_index --field devpath --value $new_devpath
         return 0
     fi
-# TODO: make work with drive_index option value!
     typeset -a old_devpath_matches
-    old_devpath_matches=(${(Pk)${:-${storage_tree_}[(R)$old_devpath*]}})
+    typeset -A drive_children
+    drive_children=(${(Pkv)${:-${storage_tree_}[(I)$drive_index*]}})
+    old_devpath_matches=(${(k)drive_children[(R)$old_devpath*]})
     typeset -a e
     e=(
     ${storage_tree_}        '# from storage tree...'
@@ -3044,7 +2963,7 @@ assignDrives__replaceAllDevpathOccurences () {
     '$new_devpath'          '# the new devpath value...'
     '${' ${storage_tree_}
     '[$old_devpath_field]#' '# plus the TRIMMED old devpath...'
-    '${ACTIVE[devpath]}}'   '# trimmed to remove the old devpath
+    '$old_devpath}'   '# trimmed to remove the old devpath
                                value and retain any partnum component.'
     )
     typeset old_devpath_field
@@ -3071,7 +2990,8 @@ assignDrives__queryForDrive () {
             test_valid:         )
     # confirm that something else created the result var so that we're not
     # making a global here
-    setReturnValue () { eval $selected_devpath_=$1 }
+    setReturnValue () {
+        [[ -z ${selected_devpath_:-} ]] || eval $selected_devpath_'=$1' }
     setAsSelected  () { eval ${system_data_}'[$1,selected]=true' }
     # will allow a non valid drive to be selected unless valid_only is true
     typeset -A all_types all_mountpoints drive_filter_arrays
@@ -3095,8 +3015,16 @@ assignDrives__queryForDrive () {
     done
     if [[ -n ${test_valid:-} ]]
     then
-        [[ -n ${avail_drives:-} &&
-           -n ${(M)avail_drives:#$test_valid} ]] && return 0 || return 1
+        if [[ -n ${avail_drives:-} &&
+              -n ${(M)avail_drives:#$test_valid} ]]
+        then
+            () { setReturnValue $1; setAsSelected $1;
+                 report "Retaining drive path set in template $drive path: $1"
+            } ${test_valid}
+            return 0
+        else
+            return 1
+        fi
     fi
     [[ -n ${selected_devpath_:-} && 
           ${(Pt)selected_devpath_:-} == scalar* ]] || {
@@ -3176,6 +3104,109 @@ assignDrives__queryForDrive () {
         the storage template file using --devpath or with the --drives
         command line option."
     fi
+}
+__AssignPartitions () {
+    # ensure each drive has a devpath, sourced from (in order):
+    #   * --drives command line list of drive device paths
+    #   * template existing values
+    #   * queried values (defaulting to first choice if --yes) 
+    . <(localopts               \
+            system_data_:       \
+            storage_tree_:      \
+            yes_to_all_:        \
+            skip_system_data_:  )
+    for each partition in a drive
+        if it has a part number, retain
+    typeset -a command_line_drives
+    command_line_drives=(${(P)drives_override_})
+    typeset drive
+    for drive in $(GetChildIndexes --array_ $storage_tree_)
+    do
+        . <(active $drive)
+        typeset new_devpath=""
+        # -------------------------------------------------------------
+        # *) HAVE command line drives
+        # -------------------------------------------------------------
+        # these take precedence and override everything else, so we
+        # use them (though perhaps we should note or query if they are
+        # note valid)
+        # -------------------------------------------------------------
+        if [[ -n ${command_line_drives:-} ]]
+        then
+            # use top of --drives stack
+            new_devpath=${command_line_drives[1]:-}
+            [[ -n ${new_devpath:-} ]] || return 0
+            command_line_drives[1]=()
+        # -------------------------------------------------------------
+        # *) NO command line drives
+        # *) TEMPLATE devpath value is present
+        # *) IS EITHER:
+        #    *) VALID devpath (not installable OR missing==invalid)
+        #    *) or TRUE skip_system_data
+        # -------------------------------------------------------------
+        # query for devpath
+        # -------------------------------------------------------------
+        elif [[ -n ${ACTIVE[devpath]:-} ]] && \
+             (  ${(P)skip_system_data_:-false} ||
+                assignDrives__queryForDrive \
+                    --system_data_ $system_data_    \
+                    --test_valid $ACTIVE[devpath]   \
+                    --yes_to_all ${(P)yes_to_all_:-false} )
+        then
+            noteByIndex                 \
+                --array $storage_tree_  \
+                --index $ACTIVE[index]  \
+                --note "Retaining existing devpath value
+                        ($ACTIVE[devpath])"
+        # -------------------------------------------------------------
+        # *) NO command line drives
+        # *) TEMPLATE devpath is either missing or INVALID
+        # *) FALSE skip_system_data
+        # -------------------------------------------------------------
+        # query for devpath
+        # -------------------------------------------------------------
+        elif ! ${(P)skip_system_data_:-false}
+        then
+            # get a new drive entry (interactive unless
+            # --yes is set as a command line option)
+            assignDrives__queryForDrive             \
+                --system_data_ $system_data_        \
+                --selected_devpath_ new_devpath     \
+                --yes_to_all ${(P)yes_to_all_:-false}
+        # -------------------------------------------------------------
+        # *) NO command line drives
+        # *) TEMPLATE devpath is either missing or INVALID
+        # *) TRUE skip_system_data
+        # -------------------------------------------------------------
+        # untenable... could query for manually entered path but better
+        # to inform user and have explicit choices made via
+        # recommendations in msg below
+        # -------------------------------------------------------------
+        else
+            fail "Missing devpath for drive $drive and the
+            --${(L)skip_system_data_} option is set, so no query
+            will be run to select a new drive. Either edit the
+            template to add a --devpath value, use the
+            --drives command line option to list drive
+            devpaths you wish to use, or run again without the
+            --${(L)skip_system_data_} command line option."
+        fi
+        # if we came out of the conditional with a new devpath,
+        # assign it to this and all other occurences
+        if [[ -n ${new_devpath:-} && 
+              ${new_devpath:-} != ${ACTIVE[devpath]:-} ]]
+        then
+            assignDrives__replaceAllDevpathOccurences   \
+                --storage_tree_  $storage_tree_         \
+                --old_devpath    "${ACTIVE[devpath]:-}" \
+                --new_devpath    $new_devpath           \
+                --drive_index    $drive
+        elif [[ -z ${new_devpath:-} && -z ${ACTIVE[devpath]:-} ]]
+        then
+            fail "$0 - Unexpected drive assignment condition. Failed to
+            acquire a device path value for drive $drive."
+        fi
+    done
 }
 __identifyExistingPartitions () {
     # each noclobber partition either has an explicit devpath, an explicit partnum
@@ -4926,59 +4957,6 @@ genMounts () {
     done
 
 }
-
-:<< \
-------------------------------------------------------------------------------
-__recordsArrayAddDrivePaths subsidiary functions
-------------------------------------------------------------------------------
-driveIsUnmounted () {
-    # takes argument 1 as drive to check, returns true if valid, unmounted
-    # drive, else false if mounted or unknown. If command line option
-    # --drives has been provided, then this check is skipped.
-    [[ -n ${DRIVES} ]] && {
-    report "Drives provided on command line; skipping system check."
-    return 0 }
-    drive=(${=1:-}); 
-    drives=(${(u)=${(@)"${(@f)"$(=lsblk -pndso NAME,MOUNTPOINT\
-        )"}"//(#b)(^ ##) ##(^ #)/}//[0-9]##/}); [[ -n ${drives:*drive} ]]
-}
-driveQuery () {
-    # driveQuery --outputvar OUTPUTVARNAME --earmarked
-    # --earkmarked is a list of drives that have been selected in previous
-    # passes but which haven't been mounted yet
-    . <(localopts earmarked: outvar: drives_array:)
-
-    # currently unmounted drives, allows user to select from list
-    drives=(${(u)=${(@)"${(@f)"$(=lsblk -pndso NAME,MOUNTPOINT\
-        )"}"//(#b)(^ ##) ##(^ #)/}//[0-9]##/})
-    earmarked=(${=earmarked:-}); drives=(${drives:|earmarked}) # remove earmarked
-    # list of drives, numbered, with sizes
-    typeset -i i=0; e="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
-    ((${#drives}==0)) && {
-        print "\nNo unmounted, unselected drives detected." 1>&2
-        print "Additional drive required. Please review current mounts.\n" 1>&2
-        exit 1; }
-    print "\nSelect from list of unmounted, unselected drives:\n" 1>&2
-    print ${${(@)drives}//(#m)*/$((++i)): $MATCH ($(=lsblk -dno SIZE $MATCH))} 1>&2
-    print "q: Quit\n" 1>&2
-
-    typeset confirm=""; while [[ -z ${(M)${confirm:-n}:#y} ]]; do
-        print -n "${${m:-}//?/\b}$e" 1>&2
-        m="Enter selection number (1"; [[ $i -gt 1 ]] && m+="-$i"; m+="/q) "
-        print -n "$m" 1>&2
-        typeset r="0"
-        # accept digits 1-$i if $i<10 (eg 1-3), otherwise digits 0-9
-        while [[ -z ${(M)${r}:#[q$((i>9?0:1))-$((i>9?9:$i))]#} ]]; do
-            read -ks r
-        done
-        [[ ${(L)r} == q ]] && {
-            print "${${m:-}//?/\b}${e}User selected quit.\n" 1>&2; exit;}
-        print -n "${${m:-}//?/\b}$e${m::=${drives[$r]} - correct? (y/n) }" 1>&2
-        read -qs confirm && print 1>&2 || print -n "\b" 1>&2
-    done
-    eval $outvar'=${drives[$r]}'
-}
-
 :<< \
 ------------------------------------------------------------------------------
 miscellaneous utility functions
@@ -5013,6 +4991,15 @@ makeActive () {
     ACTIVE[index]=$r
     PARENT[index]=${pr:-}
 
+}
+active () {
+    typeset a=active i=$1 s=""; typeset -a e;
+    e=('$a\[${s:-}${s:+,}index]=$i; eval \${(k)STORAGE[(I)$i,#[^,]##]//(#m)'
+    '*/$a\[${s:-}${s:+,}\${(M)MATCH%%[^,]##}]=\${(q-)STORAGE[\$MATCH]}}')
+    print "setopt TYPESET_SILENT; typeset $a; unset $a;" 
+    _ () { print "typeset -A $a;" ${(ej..)e:#\#*} }
+    _; i=${i%%,#[^,]}; s=parent; [[ -n ${i:-} ]] && _ || return 0
+    i=${(M)i##[0-9]#}; s=drive;  [[ -n ${i:-} ]] && _ || return 0
 }
 hangingIndent () {
     . <(localopts linespacing wrapcol: text: margin: indent:)
