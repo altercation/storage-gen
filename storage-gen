@@ -221,12 +221,12 @@ you are (for example) running the script on a machine that is not the
 installation target, you might want to ignore the actual system
 environment for the time being
 
-    storage-gen my-template --drives "/dev/sda,/dev/sdb" --ignore
+    storage-gen my-template --drives "/dev/sda,/dev/sdb" --just
 
 Finally, if you want the script to then just pick the first available
 drive and skip asking you so many questions, tell it to not query
 
-    storage-gen my-template --drives "/dev/sda,/dev/sdb" --ignore --noquery
+    storage-gen my-template --drives "/dev/sda,/dev/sdb" --just --guess
 
 Outline Your Storage:
 
@@ -387,36 +387,113 @@ For example, you might have an existing filesystem that you want to mount under
 
 :<< \
 ------------------------------------------------------------------------------
+MINI CODE STYLE GUIDE
+
+(TODO: revised, but not yet fully implemented)
+
+parameter_name_     trailing underscore indicates a parameter reference
+                    (i.e. a name of a parameter)
+
+parameter_name_a_   inidicates an array parameter reference
+
+parameter_name_aa_  indicates an associative array parameter reference
+
+GLOBALS             Global values are always in uppercase but should be
+                    restricted to use within the __MAIN function. Outside 
+                    __MAIN no globals should be referenced directly. They
+                    should always be passed as arguments
+
+allFunctions        function names are camel case
+FunctionName        global functions begin with uppercase
+functionName        functions local to functions begin with lowercase
+
+local_var           local variables are underscore separated, lowercase
+
+__FunctionName      funcion names prefixed by a double underscore are first
+                    order functions called by __MAIN.
+
+All functions should take named arguments when possible, primarily through
+the use of the helper function localopts which will ensure that all options
+passed to the function are set as function local parameters.
+
+All values passed to first order (__prefixed) functions should be parameter
+references. This is for consistency. While values could be passed for scalar
+parameters, arrays and associative arrays cannot be passed as arrays and thus
+must be passed as references. Best to normalize all options for these first
+order functions as parameter references.
+
+All values passed to second order functions should be actual parameter values
+not reference values (other than arrays).
+
+TODO:
+1. suffix all parameter references with _
+2. finish passing parameter names TO __process... function so that no
+   magic happens in that function... it must merely take references and
+   "return" the assigned parameters
+3. finish converting global functions to the uppercase format
+
+TODO: no code format related:
+make YES to all option act like that... i.e. run all queries, just make
+then default to yes or first best answer.
+
+remove escaped newlines within double brackets!
+
+ACTIVE is bad, shouldn't be global. need to turn this into either a localopts
+style set function or some other local solution. it's an accident waiting to
+happen.
+
+make a "getDrivePath" function that returns correct value for each
+type
+make a getDrivePath function, same, just more specific
+------------------------------------------------------------------------------
+
+
+:<< \
+------------------------------------------------------------------------------
 MAIN EXECUTION
-run all __ functions in order after preloading entire script (and thus
-preloading all subsequent functions, traps, aliases)
+Preloads the entirety of the script so function defintion order becomes
+irrelevant. Aliases must still be defined prior to any functions that
+use them however. Of course better to avoid aliases and use functions.
 ------------------------------------------------------------------------------
 (( ${(P)+${:-PRELOAD_${s::=${${0:t}//-/}}}} )) || { typeset PRELOAD_$s;
 . $(readlink -f $0); __MAIN $@; exit; }
 
 __MAIN () {
 
+
+# TODO: make each of these functions independent from the globals
+# and pass all requisite values in via options
+
+    # -----------------------------------------------------------------
     # read the command line opts (provided to the __MAIN function
     # and subsequently passed to this function again and convert
     # to global parameters
-    __processScriptOptions $@
 
+    __ProcessScriptOptionsReturning $@ \
+        --input_template_ INPUTFILE
+
+    # -----------------------------------------------------------------
     # terra incognita warning
-    __alphaWarning
 
+    __AlphaWarning
+
+    # -----------------------------------------------------------------
     # read in the rulesets for block devices structures, values and
     # relationships. this determines the expansion and validition
     # proecesses later
+
     track __initializeRulesets
 
+    # -----------------------------------------------------------------
     # drop out for usage/help. usage reads data from the rulesets
     # as well, so we run this after those have been read in.
-    ${USAGE:-false}     && { __usage ; exit 0 }
-    ${README:-false}    && { __usage --readme; exit 0 }
-    ${ADVANCED:-false}  && { __usage --mini --advanced; exit 0 }
-    ${HELP:-false}      && { __usage --mini; exit 0 }
-    ${LISTCODES:-false} && { __usage --listcodes ; exit 0 }
-    ${LIST:-false}      && { __listTemplates; exit 0 }
+
+    ${USAGE:-false}     && { __Usage;                   exit 0 }
+    ${README:-false}    && { __Usage --readme;          exit 0 }
+    ${ADVANCED:-false}  && { __Usage --mini --advanced; exit 0 }
+    ${HELP:-false}      && { __Usage --mini;            exit 0 }
+    ${LISTCODES:-false} && { __Usage --listcodes ;      exit 0 }
+    ${LIST:-false}      && { __ListTemplates;           exit 0 }
 
     # if using a debug log file, source it here. it may contain
     # block device environment data and (possibly) source template
@@ -436,27 +513,32 @@ __MAIN () {
         }
     }
 
-    # skip scanning the environment if we already read in this data
-    # via the --sourcedebug option
-    [[ -n ${BLOCKENV:-} ]] || {
+    # skip scanning the system environment if we already read in this data
+    # via the --sourcedebug option OR if the --just (just use the
+    # template data) option has been set (unless --envdebug is in play
+    # in which case we always grab the environment data, though again
+    # this might be the *simulated* data from a log file).
+    if [[ -z ${SYSTEM:-} ]] && ( ! ${SKIP:-false} || ${ENVDEBUG:-false} )
+    then
 
+        # -------------------------------------------------------------
         # write current block device environment to a structured
         # associative array. from here on out we no longer query
         # the live system (this is faster than repeat live queries
         # and enables system configuration simulation via the
         # debug log output and the --sourcedebug option).
-        track __captureEnvironment          \
-            --ignore_env        ENVIRON     \
-            --output_array      BLOCKENV 
 
-    }
+        track __captureEnvironment          \
+            --output_array SYSTEM
+
+    fi
 
     # dump the current environment (or the simulated environment)
     # to a human readable format. this is a combination of lsblk
     # and sgdisk data and makes it easier to scan both live system
     # configuration and debug logs.
     ${ENVDEBUG:-false} && {
-        debugDump --array BLOCKENV
+        debugDump --array SYSTEM
         exit 0
     }
 
@@ -464,152 +546,236 @@ __MAIN () {
     # via the --sourcedebug option
     [[ -n ${FILERAW:-} ]] || {
 
+        # -------------------------------------------------------------
         # handle path variations (absolute, relative, remote)
         # and output a normalized local absolute path
-        track __fileLocate \
+        track __fileLocate                  \
             --input_filepath    INPUTFILE   \
             --output_filepath   SOURCEFILE  \
             --tmpdir            SCRIPTTEMP  \
             --debugmode         DEBUG       \
             --root              SCRIPTROOT
 
+        # -------------------------------------------------------------
         # read the raw file into an array for processing
         track __fileRead                    \
-            --filepath          SOURCEFILE  \
+            --input_filepath    SOURCEFILE  \
             --output_array      FILERAW   
 
     }
 
+    # -----------------------------------------------------------------
     # strip out comments and escaped newlines
     # also adds in the --indent value for each valid line
-    track __fileClean                   \
-        --file_raw_array    FILERAW     \
-        --output_array      FILECLEAN 
 
+    track __fileClean                       \
+        --input_array           FILERAW     \
+        --output_array          FILECLEAN 
+
+    # -----------------------------------------------------------------
     # convert the cleaned file data to a tree structured
     # associative array
-    track __fileConvertToArray          \
-        --fields_array      FIELDS      \
-        --input_array       FILECLEAN   \
-        --output_array      STORAGE
 
+    track __fileConvertToArray              \
+        --input_array           FILECLEAN   \
+        --output_array          STORAGE     \
+        --ruleset_array_fields  FIELDS
+
+# new for __inflate TODO
+    #--input_array        STORAGE_RAW     \
+    #--output_array       STORAGE_INFLATED     \
+    #OR (using staging)... at least provide opportunity to be immutable
+    #--input_array        STORAGE     \
+    #--output_array       STORAGE     \
+
+    # -----------------------------------------------------------------
     # working outwards from each storage type  record in the
     # array, move fields that belong elsewhere to new or
     # existing records, reshuffling and creating as needed
-    track __inflateStructure            \
-        --storage_array     STORAGE     \
-        --fields_array      FIELDS      \
-        --values_array      VALUES      \
-        --ancestors_array   ANCESTORS   \
-        --descendants_array DESCENDANTS \
-        --equivalents_array EQUIVALENTS \
-        --inherit_array     INHERIT     \
-        --valid_array       VALID
 
+    track __inflateStructure                \
+        --storage_array         STORAGE     \
+        --fields_array          FIELDS      \
+        --values_array          VALUES      \
+        --ancestors_array       ANCESTORS   \
+        --descendants_array     DESCENDANTS \
+        --equivalents_array     EQUIVALENTS \
+        --inherit_array         INHERIT     \
+        --valid_array           VALID
+
+# new for __assume - CHANGE TO __addMissingDefaults TODO
+    #--input_array        STORAGE_RAW     \
+    #--output_array       STORAGE_INFLATED     \
+
+    # -----------------------------------------------------------------
     # limited application of defaults to missing required fields,
     # for example: filesystem --fstype and swap partition --size
-    track __assumeValues                \
-        --storage_array     STORAGE     \
-        --fields_array      FIELDS      \
-        --inherit_array     INHERIT     \
-        --valid_array       VALID       \
-        --infer_off_option  INFEROFF
 
+    track __assumeValues                    \
+        --storage_array         STORAGE     \
+        --fields_array          FIELDS      \
+        --inherit_array         INHERIT     \
+        --valid_array           VALID       \
+        --infer_off_option      INFEROFF
+
+    # -----------------------------------------------------------------
     # unless we want more verbose output in the tree display
     # strip out some of the extra metadata here (notes, etc.)
     # TODO: could move this into the tree print function?
-    track __scrubStructures             \
-        --storage_array     STORAGE     \
-        --children_array    CHILDREN    \
-        --required_array    REQUIRED    \
-        --siblings_array    SIBLINGS    \
-        --valid_array       VALID
 
+    track __scrubStructures                 \
+        --storage_array         STORAGE     \
+        --children_array        CHILDREN    \
+        --required_array        REQUIRED    \
+        --siblings_array        SIBLINGS    \
+        --valid_array           VALID
+
+    # -----------------------------------------------------------------
     # check that basic relationships and required values are
-    # present (based on rulesets)
-    # TODO: again, consider this after partition selection
-    track __validateStructures          \
-        --children_array    CHILDREN    \
-        --required_array    REQUIRED    \
-        --siblings_array    SIBLINGS    \
-        --input_array       STORAGE     \
-        --valid_array       VALID
+    # present (based on rulesets) - could run this AFTER
+    # drives and partitions to validate all in one go, but
+    # if there is a failure at this stage other than in
+    # partition paths/partnums, then it's good to know before
+    # the user wastes time selecting drives, etc.
 
-    # confirm existing, infer or query devpath values
-    # for each drive. if not ignoring the environment, then
-    # confirm valid choices or preselection in template.
-    track __identifyDrives              \
-        --drives_array      DRIVES      \
-        --input_array       STORAGE     \
-        --blockenv_array    BLOCKENV    \
-        --noquery_env       GUESS       \
-        --ignore_env        ENVIRON
+() { return 0
+    track __validateStructures              \
+        --children_array        CHILDREN    \
+        --required_array        REQUIRED    \
+        --siblings_array        SIBLINGS    \
+        --input_array           STORAGE     \
+        --valid_array           VALID
+}
 
+    # -----------------------------------------------------------------
+    # assign drive paths (e.g. /dev/sda, /dev/sdb)
+    # order of assignment is:
+    #   1. From --drives command line argument (this effectively just
+    #      writes the values into the data so that they may as well have
+    #      been in the template all along... it also overwrites any
+    #      existing template values)
+    #   2. From template
+    #   3. Guess or Query
+    #       - From best guess if --guess option is set
+    #         (e.g. take first available unmounted internal drive)
+    #       - Else if no --guess option then from interactive query
+
+    # TODO: this can still take the drives array (--drives) and
+    # can override (it isn't right now, I don't think). the override
+    # function needs to be written and it needs to override for 
+    # the case of selection of a new drive (or am I doing that already?)
+    # -- it is essentially the same thing, picking a new drive if the
+    # template drive is invalid, and then rewriting the drive paths,
+    # or overriding with a drive from the --drives option. I think the
+    # --drives option should ALWAYS be respected. It's a club, and
+    # the user is hammering the point home: "I want these drives"
+    # barring a --replace or --keep partition that is missing a
+    # partnum, they should be used regardless.
+
+    # of course I could just write the new drives regardless of
+    # anything else, and let the validators sort it out
+
+    track   __AssignDrives                  \
+            --storage_tree_     STORAGE     \
+            --system_data_      SYSTEM      \
+            --drives_override_  DRIVES      \
+            --yes_to_all_       YES         \
+            --skip_system_data_ SKIP
+    debugDump; exit
+
+#    NEED A NEW FUNCTION AND OR NEW OPTION:
+#    like "nocheck" or "skip" to skip testing which dries are valid
+#    mountpoints, etc. maybe separate out "skip" from "just"
+#
+#
+#    may no Just option. use skip instead. just means that we should take
+#    the values in the template and use only them not even looking at the
+#    system
+#    skip means the same thing IF the template as values
+#    skip + noquery means the same thing as just
+
+
+
+    # -----------------------------------------------------------------
     # confirm existing, infer or query devpath/partnum values
     # for each noclobber (keep/replace) partition.  if not
     # ignoring the environment, then confirm valid choices or
     # preselection in template.
-    track __identifyExistingPartitions  \
-        --drives_array      DRIVES      \
-        --input_array       STORAGE     \
-        --blockenv_array    BLOCKENV    \
-        --noquery_env       GUESS       \
-        --ignore_env        ENVIRON
 
+    track __identifyExistingPartitions      \
+        --drives_array          DRIVES      \
+        --input_array           STORAGE     \
+        --blockenv_array        SYSTEM      \
+        --noquery_env           YES       \
+        --ignore_env            SKIP
+
+    # -----------------------------------------------------------------
     # confirm existing, infer or query devpath/partnum values
-    # for each new (no keep or replace) partition.  if not
-    # ignoring the environment, then confirm valid choices or
-    # preselection in template.
-    track __identifyPartitions          \
-        --drives_array      DRIVES      \
-        --input_array       STORAGE     \
-        --blockenv_array    BLOCKENV    \
-        --ignore_env        ENVIRON
+    # for each new (no keep or replace) partition
 
+    track __enumeratePartitions             \
+        --drives_array          DRIVES      \
+        --input_array           STORAGE     \
+        --blockenv_array        SYSTEM      \
+        --ignore_env            SKIP
+
+    # -----------------------------------------------------------------
+    # validate that the results of the partition processing
+    # (no missing devpaths, partnums, they match, etc.)
+    # if no --just option, then make sure they exist
+
+    track __validatePartitions              \
+        --drives_array          DRIVES      \
+        --input_array           STORAGE     \
+        --blockenv_array        SYSTEM      \
+        --ignore_env            SKIP
+
+    # -----------------------------------------------------------------
     # complete filling out of devpaths for each storage
-    # element. TODO: could skip this and make devpathing
+    # elements. TODO: could skip this and make devpathing
     # a function... may be better?
-    track __identifyOtherDevicePaths    \
-        --input_array       STORAGE
 
-    # resort partitions in the array to reflect their
+    track __identifyOtherDevicePaths        \
+        --input_array           STORAGE
+
+    # re-sort partitions in the array to reflect their
     # partition numbers for clarity and to ensure that
     # max-size partitions are listed last
     # TODO: should make this ENTIRELY cosmetic and
     # add a max/no-max check in the genPayload function
-    track __reorderPartitions           \
-        --input_array       STORAGE 
+    track __reorderPartitions               \
+        --input_array           STORAGE 
 
     # create the actual script output with partitioning,
     # filesystem creation, encryption and mounting commands
-    track __genPayload                  \
-        --input_array       STORAGE     \
-        --outputvar         PAYLOAD     \
-        --sourcefile        SOURCEFILE  \
-        --infilename        INPUTFILE   \
-        --mountroot         MOUNTROOT   \
-        --multipass         MULTIPASS   \
-        --comments_option   COMPACT     \
-        --warning_option    WARNOFF     \
-        --ignore_env        ENVIRON
+    track __genPayload                      \
+        --input_array           STORAGE     \
+        --outputvar             PAYLOAD     \
+        --sourcefile            SOURCEFILE  \
+        --infilename            INPUTFILE   \
+        --mountroot             MOUNTROOT   \
+        --multipass             MULTIPASS   \
+        --comments_option       COMPACT     \
+        --warning_option        WARNOFF     \
+        --ignore_env            SKIP
 
     # optionally print out a tree representation of the
     # final composed structure
-    track __printTree                   \
-        --input_array       STORAGE     \
-        --tree_option       TREE        \
-        --input_filename    INPUTFILE   \
-        --input_filepath    SOURCEFILE
+    track __printTree                       \
+        --input_array           STORAGE     \
+        --tree_option           TREE        \
+        --input_filename        INPUTFILE   \
+        --input_filepath        SOURCEFILE
 
     # by default (and optionally with the --force option)
     # output the script to standard out (with the --output
     # command line option it is saved to the filename provided)
-    ((   ${TREE:-false}                 \
-    ||   ${ENVDEBUG:-false} )           \
-    && ! ${FORCE:-false}    ) ||        {
-    track __printPayload                \
-        --input_array       PAYLOAD     \
-        --comments_option   COMPACT     }
+    ((   ${TREE:-false}                     \
+    ||   ${ENVDEBUG:-false} )               \
+    && ! ${FORCE:-false}    ) ||            {
+    track __printPayload                    \
+        --input_array           PAYLOAD     \
+        --comments_option       COMPACT     }
 
 }
 __assumeValues () {
@@ -847,14 +1013,20 @@ SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
 
 TRAPEXIT () { (( $status > 0 )) && DEBUG=true; trapcleanup; }
 TRAPERR () {
-    teelog --category UNHANDLED_ERROR --color red "$(print -l -- ${ROLLING:-})"
+    teelog \
+        --category UNHANDLED_ERROR \
+        --color red "$(print -l -- ${ROLLING:-})"
     DEBUG=true; trapcleanup
     debugDump
     print "\n${COLOR[red]:-}Exit due to unhandled error." 1>&2; }
 trapcleanup  () {
-    [[ -z ${ROLLCALL:-} ]] || print -l -- "# "${^ROLLCALL} >> ${DEBUGLOG:-/dev/null}
-    reportLog >> ${DEBUGLOG:-/dev/null}
-    ${DEBUG:-false} && ${${DEBUGLOG:+true}:-false} && { mv $DEBUGLOG $DEBUGLOG_SAVE;
+    [[ -z ${ROLLCALL:-} ]] \
+        || print -l -- "# "${^ROLLCALL} >> ${DEBUGLOG:-/dev/null}
+    [[ -n $(functions reportLog) ]] \
+        && reportLog >> ${DEBUGLOG:-/dev/null}
+    ${DEBUG:-false} \
+        && ${${DEBUGLOG:+true}:-false} \
+        && { mv $DEBUGLOG $DEBUGLOG_SAVE;
     print "\n${COLOR[red]:-}Debug log saved to $DEBUGLOG_SAVE" 1>&2; } || :
     [[ -d "${SCRIPTTEMP:-}" ]] && rm -rf "$SCRIPTTEMP"; }
 command_not_found_handler () {
@@ -862,14 +1034,18 @@ command_not_found_handler () {
     # conditional (or at least certainly in an if... block) I can't
     # identify the correct method of forcing a full exit, not just returning
     # an error code.
-    print "$1 - Command not found" 1>&2; kill 0
+    DEBUG=true
+    print "\n$1 - Command not found. Terminating script.\n" 1>&2
+    trapcleanup
+    kill 0
 }
 
 :<< \
 ------------------------------------------------------------------------------
 Main Sequence Functions
 ------------------------------------------------------------------------------
-__processScriptOptions () {
+__ProcessScriptOptionsReturning () {
+    . <(localopts input_template_:)
 
     # Command line options
     #
@@ -896,31 +1072,32 @@ __processScriptOptions () {
     HELP        "Show summary of help information.
                  Use --usage for expanded help."
 
-    GUESS       "No interactive queries, make best guesses.
-                 Don't ask for any user input. Pick first obvious choices for the
-                 user, for example use first available drives (internal or as
-                 provided by the --drives option), automatically match partitions
-                 when there is only one existing partition that matches the values,
-                 etc. Best to run without this option first to see what happens."
+    YES         "No interactive queries (pick the first 'best' answer
+                 for potential queries. For example, for missing drive
+                 entries, pick the first available, unmounted, internal
+                 drive). This option won't work with the --skip option
+                 since --yes still requires information about the current
+                 system environment."
 
     LIST        "List builtin $SCRIPTNAME templates."
 
-    ENVIRON     "Ignore live system environment.
+    SKIP        "Skip checking the current system.
                  Disregards the current systems drive and partition environment.
                  Allows script to create output based on *only* the provded
-                 template. No interactive queries will be run for missing drive
-                 or partition information. Drives must either be set in the drive
-                 entries in the template or using the --drives option. This allows
-                 creation of scripts that don't match the current system
-                 configuration. This is different from full environment simulation
-                 with the --debug and --debugsource options."
+                 template (and any --drives option values provided on the
+                 command line). If you want a script that isn't valid for
+                 the current system (because either it's for an entirely
+                 different system configuration or because the target
+                 installation target is currently mounted), use this option.  
+                 Because the current system is being ignored, no interactive
+                 queries for missing values will be run in this mode."
 
     COMPACT     "No comments in the final script.
                  Turns off all comments and blank lines in the script output.
                  Removing these does not change the functionality of the final
                  script."
 
-    SUPPRESS    "No messages or warnings.
+    QUIET       "No messages or warnings.
                  Only display actual script (or tree) output, skip informational
                  messages (the informational messages will still be output in the
                  script itself unless the --commentsoff option is selected. With
@@ -947,15 +1124,15 @@ __processScriptOptions () {
     OPTS_ARGS=(
 
     DRIVES      "'/dev/sdX,/dev/sdY'
-                 List of drive paths to use in output.
-                 Force the use of drives from a comma separated list, for
-                 example: --drives '/dev/sda' or --drives '/dev/sda,/dev/sdc'.
-                 Drives will be assigned to missing devpath values in storage
-                 definition file using these values, in order. If used in
-                 combination with the --ignore option, then the drives listed
-                 do not need to exist on the current system. If the --drives
-                 option is used without the --ignore option, then the current
-                 system is checked for the presence of these drives first."
+                 List of drive paths to use for drive items in the template
+                 (or *implied* drives - you don't need an actual drive entry).
+                 This is precisely like adding a drive --devpath /dev/sdX
+                 entry in the template (or adding a --devpath field to an
+                 existing drive entry). THIS OVERRIDES EXISTING --devpath
+                 VALUES IN THE TEMPLATE! Without this option or actual
+                 --devpath values in the template file, the user will be
+                 prompted to select drives from the live system (if then
+                 --just option hasn't been set and if --guess isn't set)."
 
     MOUNTROOT   "'/MOUNT/ROOT/PATH'
                  Preinstall mount root. Default is /mnt.
@@ -984,7 +1161,10 @@ __processScriptOptions () {
                  '--keep' or '--replace' options have been set on
                  partitions in the template. Without at least one partition
                  with one of those options OR this command line option, the
-                 final script will include a disk format command."
+                 final script will include a disk format command. With this
+                 option on the command line, no disk formatting will occur
+                 and existing partitions will be preserved (unless --replace
+                 has been specified for a partitio)."
 
     FORCE       "Force the script to always output to console.
                  This happens by default UNLESS either the --tree or --output
@@ -1159,15 +1339,28 @@ __processScriptOptions () {
     [[ -n $* ]] && {
         typeset -a uo; uo=(${(M)*:#-*})
         [[ -n $uo ]] && {
-            __usage --mini
+            __Usage --mini
             fail "Unknown command line option${uo[2]:+s}: $uo"
             }
         }
 
     # the input file can be set by --input or arg 1
-    typeset -g INPUTFILE
-    [[ -n ${INPUT:-} ]] && INPUTFILE=${INPUT} || {
-    INPUTFILE=${1:-} && [[ -n ${1:-} ]] && shift || : }
+    typeset -g ${input_template_}
+    if [[ -n ${INPUT:-} ]]
+    then
+        # if input template name was supplied with --input option
+        eval ${input_template_}'=${INPUT}'
+    else
+        # else if it was positional
+        eval ${input_template_}'=${1:-}'
+
+        # shift the options so we can run a check on leftover
+        # command line content (below)
+        [[ -n ${1:-} ]] && shift || :
+    fi
+
+    # we shouldn't have any left over command line arguments.
+    # if we do, fail
     [[ -z ${*:-} ]] || fail "Unknown command line content: $*" 
 
     # Make sure we have user specified or default mountroot directory
@@ -1180,7 +1373,7 @@ __processScriptOptions () {
     unset MOUNTROOT; typeset -g MOUNTROOT="${m:-/mnt}"
     [[ ${MOUNTROOT} =~ "/" ]] || MOUNTROOT="${$(pwd)%/}/${MOUNTROOT}"
     [[ -d ${MOUNTROOT} ]] || {
-        __usage --mini
+        __Usage --mini
         fail "ERROR: Mountroot directory $MOUNTROOT not found."
         }
 
@@ -1208,14 +1401,14 @@ __processScriptOptions () {
     "# ZSH VERSION:  $ZSH_VERSION"
     "# COMMAND LINE: $command_line"
     "# SUBMIT TO:    $SCRIPTNAME@ethanschoonover.com\n"
-    "typeset -gA BLOCKENV"
+    "typeset -gA SYSTEM"
     "typeset -ga FILERAW"
     )
     print -l -- $debug_log_header > $DEBUGLOG
 
     ${DEBUG:-false} && {
         typeset -g VERBOSE=true
-        typeset -g SUPPRESS=""
+        typeset -g QUIET=""
         typeset -ag ROLLING
         TRAPDEBUG () {
             for i in {1..4}
@@ -1252,7 +1445,7 @@ __initializeRulesets () {
     # type inherits which fields
     VALID=(
     common      "notes auto"
-    drive       "device ssd"
+    drive       "devpath ssd"
     encryption  "luksformat luksopen pass label encrypt"
     filesystem  "fstype mountpoint label"
     logical     ""
@@ -1692,9 +1885,7 @@ __initializeRulesets () {
 __captureEnvironment () {
     # creates an array with keys formatted similarly to:
     # output_array[/dev/sda1,mountpoint]
-    . <(localopts ignore_env: output_array: debug_file:)
-
-    ${(P)ignore_env:-false} && return 0
+    . <(localopts output_array:)
 
     typeset -Ag $output_array
     typeset -A STAGING
@@ -1773,7 +1964,7 @@ __captureEnvironment () {
         anyhow."
     fi
 
-    debugCapture BLOCKENV
+    debugCapture SYSTEM
 }
 __fileLocate () {
 
@@ -1801,7 +1992,7 @@ __fileLocate () {
             exit 0
         # otherwise show minimal usage
         else
-            __usage --mini
+            __Usage --mini
             alert "Storage definition filename, path or URL required.
                         See the ${SCRIPTROOT}/storage-patterns subdirectory."
             exit 0
@@ -1827,9 +2018,9 @@ __fileLocate () {
     fi
 }
 __fileRead () {
-    . <(localopts filepath: output_array: )
+    . <(localopts input_filepath: output_array: )
     typeset -ag $output_array
-    eval $output_array'=("${(@f)$(< ${(P)filepath})}")'
+    eval $output_array'=("${(@f)$(< ${(P)input_filepath})}")'
     debugCapture $output_array
 }
 __fileClean () {
@@ -1837,7 +2028,7 @@ __fileClean () {
     # further conversion to array of records. removes all comments, merges
     # escaped newlines, etc. converts types (drive, partition to optargs,
     # records indentation level for later processing.
-    . <(localopts file_raw_array: output_array: )
+    . <(localopts input_array: output_array: )
 
     # note that without the noted comment strip :# removal below,
     # we have a problem with files that have trailing comments
@@ -1854,8 +2045,8 @@ __fileClean () {
     '${'
     '${(@Z+C+)'
     '${(F)'
-    '${'$file_raw_array':#[[:blank:]]#\#*}' '# added a comment strip here'
-    '#${'$file_raw_array'}'                 '# original'
+    '${'$input_array':#[[:blank:]]#\#*}' '# added a comment strip here'
+    '#${'$input_array'}'                 '# original'
     '//(#b)'
     '(#s)'
     '( #)'
@@ -1881,7 +2072,7 @@ __fileConvertToArray () {
     . <(localopts \
             input_array:    \
             output_array:   \
-            fields_array:   \
+            ruleset_array_fields:   \
             previous_index: \
             previous_indent:)
 
@@ -1896,8 +2087,8 @@ __fileConvertToArray () {
         input_array=STAGING
     fi
 
-    typeset -a bool; bool=(${(P)=${:-${fields_array}[boolean]}})
-    typeset -a scal; scal=(${(P)=${:-${fields_array}[scalar]}})
+    typeset -a bool; bool=(${(P)=${:-${ruleset_array_fields}[boolean]}})
+    typeset -a scal; scal=(${(P)=${:-${ruleset_array_fields}[scalar]}})
     typeset -a opts; opts=(${bool} ${scal})
 
     typeset index
@@ -1915,7 +2106,7 @@ __fileConvertToArray () {
 
             $0 --input_array $input_array \
                 --output_array $output_array \
-                --fields_array $fields_array \
+                --ruleset_array_fields $ruleset_array_fields \
                 --previous_index $index \
                 --previous_indent $indent
             
@@ -2146,6 +2337,23 @@ __inflateStructure () {
             --note "Made top level drive entry."
     }
     inflateDrive --storage_array $storage_array
+    inflateDevpaths () {
+        . <(localopts storage_array: start_at:)
+        typeset -a children
+        children=($(getChildren ${start_at:-}))
+        typeset index
+        for index in $children
+        do
+            makeActive $index
+            if [[ -n ${(M)${ACTIVE[devpath]:-}%%[0-9]##} ]]
+            then
+                setActive partnum ${(M)ACTIVE[devpath]%%[0-9]##}
+                setActive devpath ${ACTIVE[devpath]%%[0-9]##}
+            fi
+            $0 inflateDevpaths --start_at $index
+        done
+    }
+    inflateDevpaths --storage_array $storage_array
     inflateLoop () {
         . <(localopts start_at:)
         typeset -a types
@@ -2706,212 +2914,257 @@ __recordsArrayAddDrivePaths () {
 
     done
 }
-__identifyDrives () {
-    # sets drive devpaths in the storage array based on:
-    #   1. value submitted on command line using --drives value
-    #      (csv list of one or more)
-    #   2. value in source definition file (warn if value isn't a
-    #      valid, actual drive)
-    #   3. queried value (with values autoaccepted if option set)
-
-    . <(localopts drives_array: blockenv_array: input_array: ignore_env: noquery_env:)
-
-    # drives that were provides via the --drives cli option
+__AssignDrives () {
+    # ensure each drive has a devpath, sourced from (in order):
+    #   * --drives command line list of drive device paths
+    #   * template existing values
+    #   * queried values (defaulting to first choice if --yes) 
+    . <(localopts               \
+            drives_override_:   \
+            system_data_:       \
+            storage_tree_:      \
+            yes_to_all_:        \
+            skip_system_data_:  )
     typeset -a command_line_drives
-    command_line_drives=(${(P)drives_array})
-
-    if ${(P)ignore_env:-false}
-    then
-        typeset available_drives
-        available_drives=(${(P)drives_array})
-    # live environment
-    else
-        typeset -A env_staging
-        env_staging=("${(@Pkv)blockenv_array}")
-        
-        typeset -A types_actual
-        : ${(AA)types_all::=${(kv)env_staging[(I)*type]}}
-
-        typeset -A mountpoints_actual
-        : ${(AA)mountpoints_all::=${(kv)env_staging[(I)*mountpoint]}}
-
-        # list of available drives on system
-        typeset -a drives_all
-        drives_all=(${(k)types_all[(R)disk]%,type})
-
-        # list of mounted devices trimmed down to drive paths
-        typeset mounted_drives
-        mounted_drives=(${(k)mountpoints_all%[0-9]##,mountpoint})
-
-        # list of external drives
-        typeset external_drives
-        external_drives=(${(k)env_staging[(I)*rm]%,rm})
-
-        # list of available unmounted drives
-        typeset available_drives
-        available_drives=(${drives_all:|mounted_drives})
-    fi
-
-
-    # first order children are all drives
+    command_line_drives=(${(P)drives_override_})
     typeset drive
-    for drive in $(getChildren)
+    for drive in $(GetChildIndexes --array_ $storage_tree_)
     do
-
         makeActive $drive
-        typeset selected=""
-
-        # list of internal, available drives for auto-selection
-        # if the --noquery option has been set on the command line
-        # inside the drive selection loop so that any previously selected
-        # drives are removed from the list
-        typeset internal_available_drives
-        internal_available_drives=(${available_drives:|external_drives})
-
-        # array for use in matches below
-        typeset -a devpath
-        devpath=(${ACTIVE[devpath]:-})
-
-        # use command line values if present
-        if (( ${#command_line_drives} > 0 ))
+        if [[ $ACTIVE[type] == drive ]]
         then
-
-            if [[ -z ${available_drives:*devpath} ]]
-            then
-
-            fi
-            # check if in available drives...
-            # if not then fail unless warnonly has been set
-            #    in which case simply warn and proceed
-            # if so then use and remove from list of available drives
-
-            selected=${command_line_drives[1]}
-            unset "${command_line_drives}[1]"
-            available_drives=("${(@)available_drives:#$selected}")
-
-            if [[ -n ${devpath} && ${devpath} != $selected ]] \
-                && ! ${(P)ignore_env:-false}
-            then
-                warn "Note that the assignment based on the command line
-                    --drives option has overridden the file provided value
-                    of $devpath. If this is not what you intended, either
-                    run this again without the --drive command line option
-                    or remove/revise the --devpath value for drive $drive
-                    in the storage definition file."
-            fi
-
-            setActive devpath $selected
-            appendActiveInferred "Assigned drive $drive a device path value of
-                $selected as provided on the command line."
-
-        # if we have an existing devpath, check it and warn only if not valid
-        elif [[ -n $devpath ]]
-        then
-
-            setActive devpath $devpath
-
-            if [[ -z ${available_drives:*devpath} ]]
-            then
-                msg="Warning: --devpath value of drive $drive ($devpath) is not
-                    among the available, unmounted drives on this system."
-                if ! ${(P)ignore_env:-false}; then
-                    fail "$msg You may: 1) re-run this script with the
-                    --ignore command line option to disregard the actual system
-                    environment 2) revise the storage definition file, for
-                    example by removing the --devpath value or replacing it
-                    with a valid drive path."
-                fi
-                alert "$msg $SCRIPTNAME will continue but any output will not be
-                    immediately executable."
-            fi
-
-            available_drives=("${(@)available_drives:#$devpath}")
-
-        # devpath missing, auto-assign if no-query is set
-        # fail if there are no more actual drives to query
-    elif ${(P)noquery_env:-false} && [[ -n ${internal_available_drives} ]]
-        then
-
-            selected=${internal_available_drives[1]}
-            setActive devpath $selected
-            available_drives=("${(@)available_drives:#$selected}")
-            msg="Assigned drive $drive a device path value of
-                ${internal_available_drives[1]} from list of internal
-                drives available on this system (due to --noquery
-                option being set on the command line)."
-            appendActiveInferred $msg
-            report "$msg If this is not the drive you wanted, either
-                use the --drives command line option or manually
-                enter fixed --devpath values in the storage
-                definition file entry for this drive."
-
-        # devpath missing, noquery isn't set to query, so ask user
-        # fail first if there are no more actual drives to query
-        elif [[ -n ${available_drives} ]]
-        then
-
-            # query user for drive selection
-            if [[ -n ${available_drives} ]]
-            then
-
-                typeset eraser
-                eraser="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
-
-                msg="Drive $drive device selection"
-                display "\n$msg\n${msg//?/-}"
-                display "Select from list of available (unmounted,
-                         unselected) drives:"
-                print 1>&2 
-                typeset -i ad=0
-                typeset adrive
-                for adrive in $available_drives
-                do
-                    print -n "$((++ad)) $adrive (" 1>&2
-                    [[ -n ${env_staging[$adrive,rm]:-} ]] \
-                        && print -n "external" 1>&2 || print -n "internal" 1>&2
-                    print -n " ${env_staging[$adrive,size]:-} " 1>&2
-                    print "${env_staging[$adrive,model]:-})" 1>&2
-                done
-                print "\nq: Quit\n" 1>&2
-
-                typeset confirm=""
-
-                while [[ -z ${(M)${confirm:-n}:#y} ]]; do
-                    print -n "${${msg:-}//?/\b}$eraser" 1>&2
-                    msg="Enter selection number (1"
-                    [[ $ad -gt 1 ]] && msg+="-$ad"; msg+="/q) "
-                    print -n "$msg" 1>&2
-                    typeset r="0"
-                    # accept digits 1-$i if $ad<10 (eg 1-3), otherwise digits 0-9
-                    while [[ -z ${(M)${r}:#[q$((ad>9?0:1))-$((ad>9?9:$ad))]#} ]]; do
-                        read -ks r
-                    done
-                    [[ ${(L)r} == q ]] && {
-                        print "${${msg:-}//?/\b}${eraser}User selected quit.\n" 1>&2; exit;}
-                    print -n "${${msg:-}//?/\b}$eraser${msg::=${available_drives[$r]} - correct? (y/n) }" 1>&2
-                    read -qs confirm && print 1>&2 || print -n "\b" 1>&2
-                done
-
-                selected=${available_drives[$r]}
-                report "Manually selected drive $drive path: $selected"
-                setActive devpath $selected
-                available_drives=("${(@)available_drives:#$selected}")
-
-            fi
-
-        else
-
-            fail "Drive $drive does not have a --devpath assigned and
-                there are no more available, unmounted drives on this
-                system. You may either manually assign a drive the storage
-                definition file, set one or more drives to use with the
-                --drives command line option, or make new drives available
-                by unmounting a drive in the current system."
-
+            fail "Critical: top level element is not of type 'drive'."
         fi
-        
+        typeset new_devpath=""
+        # -------------------------------------------------------------
+        # *) HAVE command line drives
+        # -------------------------------------------------------------
+        # these take precedence and override everything else, so we
+        # use them (though perhaps we should note or query if they are
+        # note valid)
+        # -------------------------------------------------------------
+        if [[ -n ${command_line_drives:-} ]]
+        then
+            # use top of --drives stack
+            new_devpath=${command_line_drives[1]:-}
+            [[ -n ${newpath:-} ]] || return 0
+            command_line_drives[1]=()
+        # -------------------------------------------------------------
+        # *) NO command line drives
+        # *) TEMPLATE devpath value is present
+        # *) IS EITHER:
+        #    *) VALID devpath (not installable OR missing==invalid)
+        #    *) or TRUE skip_system_data
+        # -------------------------------------------------------------
+        # query for devpath
+        # -------------------------------------------------------------
+        elif [[ -n ${ACTIVE[devpath]:-} ]] &&
+             (  ${(P)skip_system_data_:-false} ||
+                assignDrives__queryForDrive \
+                    --system_data_ $system_data_    \
+                    --test_valid $ACTIVE[devpath]   )
+        then
+            noteByIndex                 \
+                --array $storage_tree_  \
+                --index $ACTIVE[index]  \
+                --note "Retaining existing devpath value
+                        ($ACTIVE[devpath])"
+        # -------------------------------------------------------------
+        # *) NO command line drives
+        # *) TEMPLATE devpath is either missing or INVALID
+        # *) FALSE skip_system_data
+        # -------------------------------------------------------------
+        # query for devpath
+        # -------------------------------------------------------------
+        elif ! ${(P)skip_system_data_:-false}
+            # get a new drive entry (interactive unless
+            # --yes is set as a command line option)
+            typeset selected_devpath=""
+            assignDrives__queryForDrive             \
+                --system_data_ $system_data         \
+                --selected_devpath_ new_devpath     \
+                --valid_only false                  \
+                --yes_to_all ${(P)yes_to_all_:-false}
+        # -------------------------------------------------------------
+        # *) NO command line drives
+        # *) TEMPLATE devpath is either missing or INVALID
+        # *) TRUE skip_system_data
+        # -------------------------------------------------------------
+        # untenable... could query for manually entered path but better
+        # to inform user and have explicit choices made via
+        # recommendations in msg below
+        # -------------------------------------------------------------
+        else
+            fail "Missing devpath for drive $drive and the
+                  --$skip_system_data_ option is set, so no query
+                  will be run to select a new drive. Either edit the
+                  template to add a --devpath value, use the
+                  --drives command line option to list drive
+                  devpaths you wish to use, or run again without the
+                  --$skip_system_data"
+        fi
+        # if we came out of the conditional with a new devpath,
+        # assign it to this and all other occurences
+        if [[ -n ${new_devpath:-} && 
+              ${new_devpath:-} != ${ACTIVE[devpath]:-} && ]]
+        then
+            assignDrives__replaceAllDevpathOccurences   \
+                --storage_tree_  $storage_tree_         \
+                --old_devpath    "${ACTIVE[devpath]:-}" \
+                --new_devpath    $new_devpath           \
+                --drive_index    $drive
+        elif [[ -z ${new_devpath:-} && -z ${ACTIVE[devpath]:-} ]]
+        then
+            fail "Failed to acquire a device path value for drive $drive."
+        fi
     done
-
+}
+assignDrives__replaceAllDevpathOccurences () {
+    . <(localopts           \
+            storage_tree_:  \
+            old_devpath:    \
+            new_devpath:    \
+            drive_index:    )
+    # old devpath may be empty, in which case new devpath is assigned
+    # and no scan of other old devpath instances is performed
+    if [[ -z ${old_devpath:-} ]]
+    then
+        setByIndex --index $drive_index --field devpath --value $new_devpath
+        return 0
+    fi
+# TODO: make work with drive_index option value!
+    typeset -a old_devpath_matches
+    old_devpath_matches=(${(Pk)${:-${storage_tree_}[(R)$old_devpath*]}})
+    typeset -a e
+    e=(
+    $storage_tree   '# from storage tree...'
+    '[$match]'      '# find the matching devpath element from loop'
+    '='             '# and assign...'
+    '$new_devpath'  '# the new devpath value...'
+    '${(P)${:-${storage_tree_}'
+    '[$old_devpath_match]}#' '# plus the TRIMMED old devpath...'
+    '${ACTIVE[devpath]}}'    '# trimmed to remove the old devpath
+                                value and retain any partnum component.'
+    )
+    typeset old_devpath_field
+    for old_devpath_field in $old_devpath_matches
+    do
+        eval ${(j::)e:#\#*}
+    done
+    # add a note, collapsing the match results to unique indexes
+    typeset old_devpath_record
+    for old_devpath_record_index in ${(u)${old_devpath_matches%%,*}}
+    do
+        noteByIndex \
+            --array $storage_tree_ \
+            --index $old_devpath_record_index \
+            --note "Replaced old devpath value $old_devpath with
+                    $new_devpath"
+    done
+}
+assignDrives__queryForDrive () {
+    . <(localopts               \
+            system_data_:       \
+            selected_devpath_:  \
+            yes_to_all:         \
+            test_valid:         )
+    # confirm that something else created the result var so that we're not
+    # making a global here
+    setReturnValue () { eval $selected_devpath_=$1 }
+    setAsSelected  () { eval ${system_data_}[$1,selected]=true }
+    # will allow a non valid drive to be selected unless valid_only is true
+    typeset -A all_types all_mountpoints drive_filter_arrays
+    : ${(AA)all_types::=${(Pkv)${:-${system_data_}[(I)*type]}}}
+    : ${(AA)all_mountpoints::=${(Pkv)${:-${system_data_}[(I)*mountpoint]}}}
+    drive_filter_arrays=(
+    all_drives          '${(k)all_types[(R)disk]%,type}'
+    selected_drives     '${(Pk)${:-${system_data_}[(I)*selected]}%,selected}'
+    unselected_drives   '${all_drives:|selected_drives}'
+    mounted_drives      '${(k)all_mountpoints%[0-9]##,mountpoint}'
+    unavail_drives      '$mounted_drives $selected_drives'
+    ext_drives          '${(Pk)${:-${system_data_}[(I)*rm]}%,rm}'
+    avail_drives        '${all_drives:|unavailable_drives}'
+    int_avail_drives    '${available_drives:|external_drives}'
+    )
+    if [[ -n ${test_valid:-} ]]
+    then
+        [[ -n ${(M)available_drives:#$test_valid} ]] && return 0 || return 1
+    fi
+    [[ -n ${(P)selected_devpath_:-} && 
+          ${(P)selected_devpath_:-} == scalar ]] || {
+          fail "$0: missing or wrong type for option selected_devpath" }
+    typeset array
+    for array in ${(k)drive_filter_arrays}
+    do
+        typeset -a $array
+        eval $array=(${drive_filter_arrays[key]})
+    done
+    # if yes_to_all is set then we return the first available internal
+    # drive. this may be incorrect but it's the "best guess" and the
+    # user can still review the results.
+    if ${yes_to_all:-false}
+    then
+        if [[ -n ${int_avail_drives} ]]
+        then
+            () { setReturnValue $1; setAsSelected $1 } ${int_avail_drives[1]}
+        elif [[ -n ${int_avail_drives} ]]
+        then
+            () { setReturnValue $1; setAsSelected $1 } ${avail_drives[1]}
+        else
+            fail "No unavailable (unmounted, not previously selected) drives
+            are available on this system. If you wish to use an existing
+            mounted drive you can unmount it and run again or run $SCRIPTNAME
+            again with the --skip option to skip checking the current system
+            state. If you use --skip, you must assign drives either within
+            the storage template file using --devpath or with the --drives
+            command line option."
+        fi
+    fi
+    # query user for drive selection
+    if [[ -n ${avail_drives} ]]
+    then
+        typeset eraser
+        eraser="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
+        msg="Drive $drive device selection"
+        display "\n$msg\n${msg//?/-}"
+        display "Select from list of available (unmounted, unselected) drives:"
+        print 1>&2 
+        typeset -i ad=0
+        typeset adrive
+        for adrive in $available_drives
+        do
+            print -n "$((++ad)) $adrive (" 1>&2
+            [[ -n ${(P)${:-${system_data_}[$adrive,rm]}:-} ]] \
+                && print -n "external" 1>&2 || print -n "internal" 1>&2
+            print -n " ${(P)${:-${system_data_}[$adrive,size]}:-} " 1>&2
+            print "${(P)${:-${system_data_}[$adrive,model]}:-})" 1>&2
+        done
+        print "\nq: Quit\n" 1>&2
+        typeset confirm=""
+        while [[ -z ${(M)${confirm:-n}:#y} ]]; do
+            print -n "${${msg:-}//?/\b}$eraser" 1>&2
+            msg="Enter selection number (1"
+            [[ $ad -gt 1 ]] && msg+="-$ad"; msg+="/q) "
+            print -n "$msg" 1>&2
+            typeset r="0"
+            # accept digits 1-$i if $ad<10 (eg 1-3), otherwise digits 0-9
+            while [[ -z ${(M)${r}:#[q$((ad>9?0:1))-$((ad>9?9:$ad))]#} ]]
+            do
+                read -ks r
+            done
+            if [[ ${(L)r} == q ]]
+            then
+                print "${${msg:-}//?/\b}${eraser}User selected quit.\n" 1>&2
+                exit
+            fi
+            print -n "${${msg:-}//?/\b}" 1>&2
+            print -n "$eraser" 1>&2
+            print -n "${msg::=${avail_drives[$r]} - correct? (y/n) }" 1>&2
+            read -qs confirm && print 1>&2 || print -n "\b" 1>&2
+        done
+        report "Manually selected drive $drive path: ${(P)selected_devpath_}"
+        () { setReturnValue $1; setAsSelected $1 } ${avail_drives[$r]}
+    fi
 }
 __identifyExistingPartitions () {
     # each noclobber partition either has an explicit devpath, an explicit partnum
@@ -2927,7 +3180,7 @@ __identifyExistingPartitions () {
         alert "\nIGNORING ENVIRONMENT, SKIPPING MATCHES\n:
         Skipping matching of existing partitions on system to
         --noclobber partitions listed in the storage definition file due to
-        the --ignore command line option (ignoring the actual system environment)."
+        the --just command line option (ignoring the actual system environment)."
         return 0
     fi
 
@@ -3187,9 +3440,9 @@ __identifyExistingPartitions () {
                                 --drivepath         $drivepath  \
                                 --drives_array      DRIVES      \
                                 --input_array       STORAGE     \
-                                --blockenv_array    BLOCKENV    \
-                                --noquery_env       GUESS       \
-                                --ignore_env        ENVIRON     \
+                                --blockenv_array    SYSTEM    \
+                                --noquery_env       YES       \
+                                --ignore_env        SKIP     \
                                 --result_var        pickpart
                             if [[ -n ${pickpart:-} ]]
                             then
@@ -3231,7 +3484,7 @@ __identifyExistingPartitions () {
 
 }
 selectPartitionUnderDrive () {
-    typeset -a _SELECTEDPARTS # fake closure
+    typeset -a _SELECTEDPARTS
 
     . <(localopts drivepath: blockenv_array: input_array: ignore_env: debug_opt: noquery_env: result_var:)
 
@@ -3299,7 +3552,7 @@ selectPartitionUnderDrive () {
 
     fi
 }
-__identifyPartitions () {
+__enumeratePartitions () {
     . <(localopts blockenv_array: input_array: ignore_env:)
 
     processPartitions () {
@@ -3722,7 +3975,7 @@ __printPayload () {
     print -l -- ${${(@f)payload}//(#s)\#([^!]|(#e))*/}
     } || print -l -- "${(@)payload}"
 }
-__usage () {
+__Usage () {
 
     . <(localopts readme mini advanced listcodes)
 
@@ -3732,7 +3985,7 @@ __usage () {
     typeset __="${(r:$COLUMNS::--:):-}"
 
     usageHighlight () {
-        typeset -g _LL # fake closure
+        typeset -g _LL
         . <(localopts indent:)
         typeset s=${COLOR[default,bold]:-} b=${COLOR[blue]:-} d=${COLOR[default]:-}
         # check initial, non indent leading character of last line
@@ -4187,7 +4440,6 @@ ancestorOrSelfIsNoclobber () {
     done
     return 1
 }
-
 activeIsNoclobber () {
     indexIsNoclobber --index ${ACTIVE[index]}
 }
@@ -4338,6 +4590,10 @@ getChildren () {
     #print ${${(@nP)${:-${a}[(I)${r:-}${r:+,}[[:digit:]]}##,type]}%,type}
     print ${(@nP)${:-${a}[(I)${r:-}${r:+,}[[:digit:]]##,type]}%,type}
 }
+GetChildIndexes () {
+    . <(localopts array_: index:)
+    print ${(@nuP)${:-${array_}[(I)${index:-}${index:+,}[0-9]##,[^,]##]}%,*}
+}
 
 
 :<< \
@@ -4397,7 +4653,7 @@ genPartitions () {
 
             ${(P)ignore_env:-false} && fail "Cannot process --replace
             partitions while --$ignore_env is set."
-            if [[ -n ${BLOCKENV:-} && -n ${BLOCKENV[${ACTIVE[devpath]},start]:-} ]]
+            if [[ -n ${SYSTEM:-} && -n ${SYSTEM[${ACTIVE[devpath]},start]:-} ]]
             then
                 msg=""
                 [[ $USERNAME == root ]] || msg=", most probably
@@ -4410,8 +4666,8 @@ genPartitions () {
             sgdisk_cmd="sgdisk"
             sgdisk_cmd+=" --delete=${ACTIVE[partnum]}"
             sgdisk_cmd+=" --new=${ACTIVE[partnum]}:"
-            sgdisk_cmd+="$BLOCKENV[$ACTIVE[devpath],start]}:"
-            sgdisk_cmd+="$BLOCKENV[$ACTIVE[devpath],end]} "
+            sgdisk_cmd+="$SYSTEM[$ACTIVE[devpath],start]}:"
+            sgdisk_cmd+="$SYSTEM[$ACTIVE[devpath],end]} "
             sgdisk_cmd+="${PARENT[devpath]}"
             eval $outputvar'+=("$sgdisk_cmd $sgdisk_msg")'
         fi
@@ -4830,7 +5086,7 @@ teelog () {
         typeset -ag REPORT_${(U)category}
         eval REPORT_${(U)category}'+=("${${=@}}")'
     fi
-    if ! ${noprint:-false} && ! ${SUPPRESS:-false} && \
+    if ! ${noprint:-false} && ! ${QUIET:-false} && \
     [[ ${VERBOSE:-false} == ${verbose:-${VERBOSE:-false}} ]]
     then
         if ! { ${verbose:-false} && ! ${VERBOSE:-false} }
@@ -5062,18 +5318,18 @@ debugCapture () {
 }
 track () {
     typeset -ag ROLLCALL; ROLLCALL+=($1)
-    ${SUPPRESS:-false} || {
+    ${QUIET:-false} || {
     print -n ${COLOR[cyan]:-} 1>&2
     print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
     print ${COLOR[default]:-} 1>&2
     eval $@
 }
-__listTemplates () {
+__ListTemplates () {
     print "\nReading template files from $SCRIPTROOT/templates\n" 1>&2
     print -l -- $SCRIPTROOT/templates/***~(*README)(#q.:t) 1>&2
     print 1>&2
 }
-__alphaWarning () {
+__AlphaWarning () {
     # If not me, or root, or on another system, warn unless
     # user adds --alpha option
 
@@ -5081,7 +5337,7 @@ __alphaWarning () {
     DEVSTRING=es@skylla
     
     ${ALPHA:-false} || [[ -z ${${:-$USERNAME@$HOST}:#$DEVSTRING} ]] && return 0
-    __usage --mini
+    __Usage --mini
     warn "Hello, not me: this is hard core alpha code.
           Please read the readme and maybe glance at the sgdisk manual
           to understand the final script output. Then run $SCRIPTNAME
