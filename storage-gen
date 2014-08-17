@@ -2604,62 +2604,6 @@ __reorderPartitions () {
         sortPartitions --on_drive $drive
     done
 }
-__reorderPartitions_OLD () {
-    # move any --size max partition to end of siblings
-    # so that it is made last by partitioning command
-    # placing this last in the list as there could be
-    # conflicts with other inferences
-    . <(localopts input_array:)
-
-    reorderLoop () {
-        . <(localopts start_at:)
-        typeset -a children
-        children=($(getChildren ${start_at:-}))
-        typeset index
-        for index in $children
-        do
-            makeActive $index
-
-            if [[ ${ACTIVE[type]} == partition ]]
-            then
-
-                # we don't care which partition, just that we are at
-                # partition level
-                if (( ${(MPv)#${:-${input_array}[(I)${ACTIVE[index]%%[0-9]#}[0-9]##,size]}:#max}>1 ))
-                then
-                    fail "Multiple partitions with 'max' size, but only
-                        one allowed. Please check --size assignments."
-                fi
-
-                typeset -A sizes
-                : ${(AA)sizes::=${(Pkv)${:-${input_array}[(I)${ACTIVE[index]%%[0-9]#}[0-9]##,size]}}}
-                # partition that has the max value
-                max_part_index=${(k)sizes[(r)max]%,size}
-
-                # last partition in the list
-                max_sib_index=${${${(On)${${(Pk)${:-${input_array}[(I)${ACTIVE[index]%%[0-9]#}[0-9]##,type]}%,type}//,/${(#):-0}}}//${(#):-0}/,}[1]}
-
-                # loop through all records in max partition branch
-                # and move to a new maximum value index
-                new_final_index=${max_sib_index%%[0-9]#}$((${(M)max_sib_index%%[0-9]#} + 1))
-                typeset old_index
-                for old_index in ${(P)${:-${input_array}[(I)${max_part_index},*]}}
-                do
-                    new_index=${new_final_index}${old_index#${max_part_index}}
-                    eval $input_array'[$new_index]=${'$input_array'[$old_index]}'
-                    unset "${input_array}[$old_index]"
-                done
-
-                return 0
-
-            fi
-
-            $0 --start_at $index
-
-        done
-    }
-    reorderLoop
-}
 __scrubStructures () {
     . <(localopts storage_array: values_array:)
     typeset record
@@ -3146,7 +3090,7 @@ __AssignPartitions () {
         # -------------------------------------------------------------
         # query for devpath
         # -------------------------------------------------------------
-        elif [[ -n ${ACTIVE[devpath]:-} ]] && \
+        elif [[ -n ${active[devpath]:-} ]] && \
              (  ${(P)skip_system_data_:-false} ||
                 assignDrives__queryForDrive \
                     --system_data_ $system_data_    \
@@ -3155,9 +3099,9 @@ __AssignPartitions () {
         then
             noteByIndex                 \
                 --array $storage_tree_  \
-                --index $ACTIVE[index]  \
+                --index $active[index]  \
                 --note "Retaining existing devpath value
-                        ($ACTIVE[devpath])"
+                        ($active[devpath])"
         # -------------------------------------------------------------
         # *) NO command line drives
         # *) TEMPLATE devpath is either missing or INVALID
