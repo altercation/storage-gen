@@ -464,18 +464,20 @@ __MAIN () {
         GLOBAL_EXPORT \
         NO_CONTINUE_ON_ERROR \
         NO_ERR_RETURN \
-        NO_UNSET \
         NO_LOCAL_TRAPS \
+        NO_UNSET \
         NULL_GLOB \
         TYPESET_SILENT \
         WARN_CREATE_GLOBAL
 
     zmodload zsh/regex zsh/zutil
 
+    # __MAIN expects $0 to be passed as first positional argument
+    # so convert it to script parameters and shift it out of args
     typeset -g SCRIPTNAME="${${SCRIPTPATH:=$(readlink -f $1)}:t}"
     typeset -g SCRIPTROOT="${SCRIPTPATH:h}"
     typeset -g SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
-    shift # __MAIN expects $0 to be passed as first positional argument
+    shift
 
     # -----------------------------------------------------------------
     # Create command line script options and associated help information
@@ -678,11 +680,11 @@ __MAIN () {
         --input_template_               INPUTFILE
 
     __InitializeColor \
-        --color_a_                      COLOR \
-        --nocolor_option_               COLOROFF
+        --nocolor_option_               COLOROFF \
+        --return_color_a_               COLOR
 
     __InitializeMountroot \
-        --mountroot_                    MOUNTROOT
+        --return_mountroot_             MOUNTROOT
 
     __InitializeTrapsAndLog \
         --command_line_                 COMMAND_LINE \
@@ -690,12 +692,15 @@ __MAIN () {
         --debug_log_                    DEBUGLOG \
         --input_filename_               INPUTFILE \
         --input_filepath_               SOURCEFILE \
+        --input_fileraw_                FILERAW \
         --storage_tree_                 STORAGE \
         --system_data_                  SYSTEM \
-        --file_raw_data_                FILERAW \
         --storage_tree_                 STORAGE \
         --script_name_                  SCRIPTNAME \
         --script_temp_                  SCRIPTTEMP
+
+    __InitializeStorageFunctions \
+        --storage_tree_                 STORAGE
 
     # -----------------------------------------------------------------
     # terra incognita warning
@@ -720,23 +725,18 @@ __MAIN () {
     ${LISTCODES:-false} && { __Usage --listcodes ;      exit 0 }
     ${LIST:-false}      && { __ListTemplates;           exit 0 }
 
+
     # if using a debug log file, source it here. it may contain
     # block device environment data and (possibly) source template
     # raw file data. whatever values are present will be used
     # in the remainder of the script in lieu of otherwise provided
     # or present information.
-    [[ -z $SOURCEDEBUG ]] || {
-        [[ -f $SOURCEDEBUG ]] && {
-            . $SOURCEDEBUG
-            warn "\nUsing a simulated environment sourced using the
-            --debugsource option If the sourced environment differs from the
-            actual environment, resulting script will not be safe to execute
-            on this system."
-        } || {
-            fail "Unable to locate debug file '$SOURCEDEBUG'.
-                      Check filename/path."
-        }
-    }
+    #
+    # TODO: implement local to global conversion in function
+    track __SourceDebugLog \
+        --source_file_          SOURCEDEBUG \
+        --return_system_data_   SYSTEM      \
+        --return_fileraw_       FILERAW
 
     # skip scanning the system environment if we already read in this data
     # via the --sourcedebug option OR if the --just (just use the
@@ -906,17 +906,6 @@ __MAIN () {
             --drives_override_  DRIVES      \
             --yes_to_all_       YES         \
             --skip_system_data_ SKIP
-
-#    NEED A NEW FUNCTION AND OR NEW OPTION:
-#    like "nocheck" or "skip" to skip testing which dries are valid
-#    mountpoints, etc. maybe separate out "skip" from "just"
-#
-#
-#    may no Just option. use skip instead. just means that we should take
-#    the values in the template and use only them not even looking at the
-#    system
-#    skip means the same thing IF the template as values
-#    skip + noquery means the same thing as just
 
     track   __AssignPartitions              \
             --storage_tree_     STORAGE     \
@@ -1366,49 +1355,50 @@ __InitializeScriptOptargs () {
 }
 __InitializeColor () {
     . <(localopts \
-       color_a_:        \
+       return_color_a_: \
        nocolor_option_: )
     # Prep color array, otherwise no color values if coloroff is set
     if ! ${(P)nocolor_option_:-false}; then
-        typeset -Ag $color_a_
+        typeset -Ag $return_color_a_
         autoload colors; colors
         for color in ${(k)fg_no_bold}; do
-            eval $color_a_'[$color]=${fg_no_bold[$color]}'
-            eval $color_a_'[$color,bold]=${fg_bold[$color]}'
+            eval $return_color_a_'[$color]=${fg_no_bold[$color]}'
+            eval $return_color_a_'[$color,bold]=${fg_bold[$color]}'
         done
     else
-        unset $color_a_
+        unset $return_color_a_
     fi
 }
 __InitializeMountroot () {
     . <(localopts \
-       mountroot_: )
+       return_mountroot_: )
     # Make sure we have user specified or default mountroot directory
-    typeset m="${(P)mountroot_:-}"
+    typeset m="${(P)return_mountroot_:-}"
     # we're going to either assign or reassign as a scalar and it comes
     # in as an array from our options processing
     # so unset first, then assign existing or default value
     # TODO: this could be a one liner if I unset inside an assignment
     # or possibly if I force set?
-    unset $mountroot_; typeset -g $mountroot_="${m:-/mnt}"
-    [[ ${(P)mountroot_} =~ "/" ]] || $mountroot_="${$(pwd)%/}/${(P)mountroot_}"
-    [[ -d ${(P)mountroot_} ]] || {
+    unset $return_mountroot_; typeset -g $return_mountroot_="${m:-/mnt}"
+    [[ ${(P)return_mountroot_} =~ "/" ]] || {
+        $return_mountroot_="${$(pwd)%/}/${(P)return_mountroot_}" }
+    [[ -d ${(P)return_mountroot_} ]] || {
         __Usage --mini
-        fail "ERROR: Mountroot directory ${(P)mountroot_} not found."
+        fail "ERROR: Mountroot directory ${(P)return_mountroot_} not found."
         }
 }
 __InitializeTrapsAndLog () {
     . <(localopts \
         command_line_: \
-        debug_option_: \
         debug_log_: \
-        storage_tree_: \
-        system_data_: \
+        debug_option_: \
         input_filename_: \
         input_filepath_: \
-        file_raw_data_: \
+        input_fileraw_: \
         script_name_: \
-        script_temp_: )
+        script_temp_: \
+        storage_tree_: \
+        system_data_: )
     # debug log and a path to move it to if script fails
     # (so don't make user re run with --debug on a bad error)
     # DLHOST=${SCRIPTNAME}${${(%)${:-%D}}//-/}.debug
@@ -1432,7 +1422,7 @@ __InitializeTrapsAndLog () {
     "# COMMAND LINE: ${(P)command_line_}"
     "# SUBMIT TO:    ${(P)script_name_}@ethanschoonover.com\n"
     "typeset -gA $system_data_"
-    "typeset -ga $file_raw_data_"
+    "typeset -ga $input_fileraw_"
     )
     print -l -- $debug_log_header > ${(P)debug_log_}
 
@@ -1536,6 +1526,61 @@ __InitializeTrapsAndLog () {
             print "$sq$x${__::=${(r:$(($width-${#x}))::--:):-}}$sq" >> $dlog;
             print -l -- ${*} >> $dlog; print -- "$x${__}\n" >> $dlog;
         }'
+}
+__InitializeStorageFunctions () {
+    . <(localopts storage_tree_:)
+    # makes functions that have a default fallback value to specific named
+    # arrays without pre-assigning those array names (again, to avoid implicit
+    # use of globals... we're still referencing them but making it as explicit
+    # as possible)
+
+    # children ()
+    #
+    # returns all child records given an index. a missing index returns the
+    # top level children for the array
+    #
+    functions[children]='
+            . <(localopts array_: of:)
+            typeset _a_=${array_:-'$storage_tree_'} _i=${of:-}
+            print ${(@nuP)${:-${_a_}[(I)${_i:-}${_i:+,}[0-9]##,[^,]##]}%,*}
+            '
+
+    # active ()
+    #
+    # must be called inside a function using this syntax:
+    #
+    # . <(active recordindex)
+    #
+    # e.g.
+    #
+    # . <(active 1,1)
+    #
+    # . <(active $index)
+    #
+    # resulting in a *local* associative array
+    #     active[*] - containing all values for activated record
+    #     active[parent,*] - same for parent of activated record
+    #     active[drive,*]  - same for drive  of activated record
+    #
+    # each of the above array subscript variations also contains
+    # a convenience index value, for example $active[index]
+    #
+    functions[active]='
+            typeset a=active
+            typeset s=""
+            typeset _i=$1
+            typeset -a e;
+            e=(
+            '\''$a\[${s:-}${s:+,}index]=$_i; '\''
+            '\''eval \${(k)STORAGE[(I)$_i,#[^,]##]//(#m)'\''
+            '\''*/$a\[${s:-}${s:+,}\${(M)MATCH%%[^,]##}'\''
+            '\'']=\${(q-)'$storage_tree_'[\$MATCH]}}'\''
+            )
+            print "setopt TYPESET_SILENT; typeset $a; unset $a;" 
+            _ () { print "typeset -A $a;" ${(ej..)e:#\#*} }
+            _; _i=${_i%%,#[^,]}; s=parent; [[ -n ${_i:-} ]] && _ || return 0
+            _i=${(M)i##[0-9]#}; s=drive;  [[ -n ${_i:-} ]] && _ || return 0
+            '
 }
 __InitializeRulesets () {
 
@@ -2015,6 +2060,29 @@ __InitializeRulesets () {
     )
     
 }
+__SourceDebugLog () {
+    . <(localopts \
+        source_file_:           \
+        return_system_data_:    \
+        return_fileraw_:        )
+    # TODO: implement local to global conversion in function
+    if [[ -n ${(P)source_file_:-} ]]
+    then
+        if [[ -f ${(P)source_file_} ]]
+        then
+            zsh +n ${(P)source_file_} &>/dev/null || {
+                fail "${(P)source_file_} failed syntax check. Check format." }
+            . ${(P)source_file_}
+            warn "\nUsing a simulated environment sourced using the
+                  --debugsource option If the sourced environment differs
+                  from the actual environment, resulting script will not
+                  be safe to execute on this system."
+        else
+            fail "Unable to locate debug file '${(P)source_file_}'.
+                  Check filename/path."
+        fi
+    fi
+}
 __captureEnvironment () {
     # creates an array with keys formatted similarly to:
     # output_array[/dev/sda1,mountpoint]
@@ -2271,12 +2339,13 @@ __fileConvertToArray () {
             eval set -- ${(P)${input_array}[1]};
             . <(localopts ${bool} ${^scal}: indent: type:)
             typeset leftovers="${@:-}"
-            # assign values to storage array (this assigns all of them)
-            params='${=${:-${(@)^${(@M)${(@k)o##-#}//(#m)(*)/${output_array}'
-            params+='[${index}${index:+,}${MATCH}]${MATCH:+=}${(q)o[--'
-            params+='${MATCH}]#=}}};}//typesetNULL/typeset }' 
 
-            eval ${(e)params}
+            # assign values to storage array (this assigns all of them)
+            typeset -a e; e=(
+            '${=${:-${(@)^${(@M)${(@k)o##-#}//(#m)(*)/${output_array}'
+            '[${index}${index:+,}${MATCH}]${MATCH:+=}${(q)o[--'
+            '${MATCH}]#=}}};}//typesetNULL/typeset }' 
+            ); eval ${(ej::)e}
 
             # strip indent values (could be in a pattern above as well)
             # to normalize test output (indent value compute may change)
@@ -2692,45 +2761,38 @@ __inflateStructure () {
     while ! inflateLoop; do :; done
 }
 __reorderPartitions () {
-
     # move any --size max partition to end of siblings
     # so that it is made last by partitioning command
+    #
+    # all partitions (including the max partition) are
+    # expected to have partnums at this point
     #
     # reorder rest of partitions so they output in a
     # logical fashion (not necessary other than it
     # makes review of the output much easier)
-
     . <(localopts input_array:)
-
     sortPartitions () {
         . <(localopts on_drive:)
         typeset -A partnums
+        # get all entries with partnums (thus all numbered partitions)
         partnums=(${(kv)STORAGE[(I)$on_drive,[0-9]##,partnum]})
+        # move partitions to temp record namespace
         for partition in ${(k)partnums%,partnum}
         do
             eval ${(k)STORAGE[(I)$partition,*]//(#m)*/STORAGE[TEMP,$MATCH]=${(q-)STORAGE[$MATCH]}; unset \"STORAGE[$MATCH]\"; }
-            # add a null string to this entry key
-            # to take it out of the legitimate array
         done
-
+        # move partitions back to actual namespace in new order
         for partition in ${(k)partnums%,partnum}
         do
-            # get new index of this partitions partnum from sorted list
+            # get new index of this partition's partnum from sorted list
             newindex=${partition%%[0-9]#}${${(@nv)partnums}[(i)$partnums[$partition,partnum]]}
             eval ${(k)STORAGE[(I)TEMP,$partition,*]//(#b)(TEMP,)($partition)(,*)/STORAGE[$newindex$match[3]]=${(q-)STORAGE[TEMP,${match[2]}${match[3]}]}; }
         done
         # remove the temp values
         eval ${(k)STORAGE[(I)TEMP,*]//(#m)*/unset \"STORAGE[$MATCH]\"; }
     }
-
-    typeset -a drives
-    drives=($(getChildren))
-
-    typeset drive
-    for drive in $drives
-    do
-        sortPartitions --on_drive $drive
-    done
+    typeset drive; typeset -a drives; drives=($(getChildren))
+    for drive in $drives; do sortPartitions --on_drive $drive; done
 }
 __scrubStructures () {
     . <(localopts storage_array: values_array:)
@@ -2918,7 +2980,7 @@ __AssignDrives () {
     typeset -a command_line_drives
     command_line_drives=(${(P)drives_override_})
     typeset drive
-    for drive in $(GetChildIndexes --array_ $storage_tree_)
+    for drive in $(children)
     do
         . <(active $drive)
         if [[ $active[type] != drive ]]
@@ -3178,108 +3240,133 @@ assignDrives__queryForDrive () {
     fi
 }
 __AssignPartitions () {
-    # ensure each drive has a devpath, sourced from (in order):
-    #   * --drives command line list of drive device paths
-    #   * template existing values
-    #   * queried values (defaulting to first choice if --yes) 
+    # ensure each partition has a partnum, sourced from (in order):
+    #   * existing partnum from template, if valid (fail if not?)
+    #   * matching partition based on values
+    #     (for noclobber keep/replace partitions)
+    #   * first available partition number (based on max available
+    #     partition number, taking into consideration noclobber and skip)
+    #   * queried values (defaulting to first choice if --yes) if not
+    #     skipping
     . <(localopts               \
+            drives_override_:   \
             system_data_:       \
             storage_tree_:      \
             yes_to_all_:        \
             skip_system_data_:  )
-    for each partition in a drive
-        if it has a part number, retain
-    typeset -a command_line_drives
-    command_line_drives=(${(P)drives_override_})
+
+    # scenario 1: no skip, no noclobber, no partnums
+    #
+    # Each partition receives a partnum in sequence, from 1 to n
+
+    # scenario 2: no skip, no noclobber, all partnums
+    #
+    # each partnum assigned as is, regardless of value
+
+    # scenario 3: no skip, no clobber, some partnums
+    #
+    # partnums are assigned in sequence, making sure to skip the existing
+    # partnum value (e.g. if the partnum assigned in template is 2, then
+    # we skip that one). This implies that there is a "no-use" or "earmarked"
+    # registry of partnums
+    #
+    # or maybe we just use the existing partnum as base? probably no since
+    # we aren't keeping anything and we wil be erasing the whole drive
+
+    # scenario 4: no skip, some noclobber
+    #
+    # no clobber partitions are identified either with inferrences or
+    # via query. these are then treated as in scenario 3 (e.g. they become
+    # earmarked). or instead we use this as a base value for sequence.
+    # I don't think we can squeeze new partitions into existing partition
+    # allocations reliably). In this scenario I would suggest the user sort
+    # the partitions first.
+
+
+    # so we need to identify up front: are we formatting this drive?
+
+    # we need to infer any keep/replace partitions
+    # we earmark all partitions UP TO any existing noclobber partition
+    # (or we do this in the earmarking phase which just earmarks noclobber
+    # partitions differently... probably better)
+    # so a noclobber partition with partnum 3 will mean we earmark 1-3.
+    
+    # then we scan through for further earmarking (earmarking)
+
+    # then we sequentially number the partitions (enumeration)
+
+    # then we reorder partitions
+
+    # at some point near the end we then should identify gaps and warn
+
+#    assignPartitions__identifyExistingPartitions
+#    assignPartitions__earmarkEnumeratedPartitions
+#    assignPartitions__enumerateRemainingPartitions
+#    assignPartitions__reorderPartitionRecords
+#    assignPartitions__checkForPartitionGaps
+#
+#    for each partition in a drive
+#        if it has a part number, retain & earmark
+#        if it has no part number, if it is noclobber then infer or query, assigning part number, earmark up to this number
+
+    typeset -a earmarked_partitions
+
     typeset drive
-    for drive in $(GetChildIndexes --array_ $storage_tree_)
+    for drive in $(children)
     do
-        . <(active $drive)
-        typeset new_devpath=""
-        # -------------------------------------------------------------
-        # *) HAVE command line drives
-        # -------------------------------------------------------------
-        # these take precedence and override everything else, so we
-        # use them (though perhaps we should note or query if they are
-        # note valid)
-        # -------------------------------------------------------------
-        if [[ -n ${command_line_drives:-} ]]
+        assignPartitions__identifyExistingPartitions \
+            --storage_tree_     $storage_tree_      \
+            --system_data_      $system_data_       \
+            --yes_to_all_       $yes_to_all_        \
+            --skip_system_data_ $skip_system_data_  \
+            --on_drive          $drive
+        assignPartitions__earmarkEnumeratedPartitions
+        assignPartitions__enumerateRemainingPartitions
+        assignPartitions__reorderPartitionRecords
+        assignPartitions__checkForPartitionGaps
+    done
+}
+assignPartitions__identifyExistingPartitions () {
+    . <(localopts \
+            storage_tree_:      \
+            system_data_:       \
+            yes_to_all_:        \
+            skip_system_data_:  \
+            on_drive:           )
+    typeset partition
+    for partition in $(children --of $on_drive)
+    do
+        . <(active $partition)
+        if [[ $active[type] == partition ]]             \
+           && [[ -z ${active[partnum]:-} ]]             \
+           && indexIsNoclobber --index $active[index]   \
+           && ${(P)skip_system_data_:-false}
         then
-            # use top of --drives stack
-            new_devpath=${command_line_drives[1]:-}
-            [[ -n ${new_devpath:-} ]] || return 0
-            command_line_drives[1]=()
-        # -------------------------------------------------------------
-        # *) NO command line drives
-        # *) TEMPLATE devpath value is present
-        # *) IS EITHER:
-        #    *) VALID devpath (not installable OR missing==invalid)
-        #    *) or TRUE skip_system_data
-        # -------------------------------------------------------------
-        # query for devpath
-        # -------------------------------------------------------------
-        elif [[ -n ${active[devpath]:-} ]] && \
-             (  ${(P)skip_system_data_:-false} ||
-                assignDrives__queryForDrive \
-                    --system_data_ $system_data_    \
-                    --test_valid $ACTIVE[devpath]   \
-                    --yes_to_all ${(P)yes_to_all_:-false} )
-        then
-            noteByIndex                 \
-                --array $storage_tree_  \
-                --index $active[index]  \
-                --note "Retaining existing devpath value
-                        ($active[devpath])"
-        # -------------------------------------------------------------
-        # *) NO command line drives
-        # *) TEMPLATE devpath is either missing or INVALID
-        # *) FALSE skip_system_data
-        # -------------------------------------------------------------
-        # query for devpath
-        # -------------------------------------------------------------
-        elif ! ${(P)skip_system_data_:-false}
-        then
-            # get a new drive entry (interactive unless
-            # --yes is set as a command line option)
-            assignDrives__queryForDrive             \
-                --system_data_ $system_data_        \
-                --selected_devpath_ new_devpath     \
-                --yes_to_all ${(P)yes_to_all_:-false}
-        # -------------------------------------------------------------
-        # *) NO command line drives
-        # *) TEMPLATE devpath is either missing or INVALID
-        # *) TRUE skip_system_data
-        # -------------------------------------------------------------
-        # untenable... could query for manually entered path but better
-        # to inform user and have explicit choices made via
-        # recommendations in msg below
-        # -------------------------------------------------------------
-        else
-            fail "Missing devpath for drive $drive and the
-            --${(L)skip_system_data_} option is set, so no query
-            will be run to select a new drive. Either edit the
-            template to add a --devpath value, use the
-            --drives command line option to list drive
-            devpaths you wish to use, or run again without the
-            --${(L)skip_system_data_} command line option."
-        fi
-        # if we came out of the conditional with a new devpath,
-        # assign it to this and all other occurences
-        if [[ -n ${new_devpath:-} && 
-              ${new_devpath:-} != ${ACTIVE[devpath]:-} ]]
-        then
-            assignDrives__replaceAllDevpathOccurences   \
-                --storage_tree_  $storage_tree_         \
-                --old_devpath    "${ACTIVE[devpath]:-}" \
-                --new_devpath    $new_devpath           \
-                --drive_index    $drive
-        elif [[ -z ${new_devpath:-} && -z ${ACTIVE[devpath]:-} ]]
-        then
-            fail "$0 - Unexpected drive assignment condition. Failed to
-            acquire a device path value for drive $drive."
+            assignPartitions__inferPartition || \
+            assignPartitions__queryForPartition \
+                --yes_to_all_ $yes_to_all_
         fi
     done
 }
+assignPartitions__inferPartition () {
+    :
+}
+assignPartitions__queryForPartition () {
+    :
+}
+assignPartitions__earmarkEnumeratedNewPartitions () {
+    . <(localopts storage_tree_: on_drive:)
+}
+assignPartitions__enumerateRemainingNewPartitions () {
+    . <(localopts storage_tree_: on_drive:)
+}
+assignPartitions__reorderPartitionRecords () {
+    . <(localopts storage_tree_: on_drive:)
+}
+assignPartitions__checkForPartitionGaps () {
+    . <(localopts storage_tree_: on_drive:)
+}
+
 __identifyExistingPartitions () {
     # each noclobber partition either has an explicit devpath, an explicit partnum
     # or some information that should allow us to deduce which partition it is.
@@ -4108,6 +4195,7 @@ __Usage () {
         print -- "$b${@}$d"; return }
         # if last line wasn't empty, then this isn't eligible for highlight
         [[ -n $c ]] && { print -- "${_LL::=${@}}"; return }
+        typeset -a e
         e=(
         '${${@'                 '# expand all values passed to this function'
         '//(#b)'                '# FIRST search/replace with backreferences on'
@@ -4208,7 +4296,7 @@ __Usage () {
         ${(kv)OPTS_ARGS}
         )
 
-        opt_indent=$(( ${#${(kO@)minimal_opts//?/#}[1]}+7))
+        typeset opt_indent=$(( ${#${(kO@)minimal_opts//?/#}[1]}+7))
         typeset l=${(r.$margin...):-} print=:
 
         typeset -a optarrays
@@ -4218,8 +4306,10 @@ __Usage () {
             [[ $optset =~ _ALT ]] && case=U || case=L
             for opt in ${(okP)optset}
             do
-                eval 'optflags="-${('$case')opt:0:1}, --${(L)opt}"'
+                eval 'typeset optflags="-${('$case')opt:0:1}, --${(L)opt}"'
+                typeset -a optval
                 optval=("${(@)${(fP)${:-${optset}[$opt]}}## #}")
+                typeset optargs optdesc
                 if [[ $optset =~ ARGS ]]
                 then
                     optargs="${optval[1]}"
@@ -4263,7 +4353,7 @@ __Usage () {
         ${(kv)OPTS_ARGS_ALT}
         )
 
-        opt_indent=$(( ${#${(kO@)allopts//?/#}[1]}+7))
+        typeset opt_indent=$(( ${#${(kO@)allopts//?/#}[1]}+7))
         typeset l=${(r.$margin...):-} print=:
 
         for optset in OPTS_BOOL OPTS_BOOL_ALT OPTS_ARGS OPTS_ARGS_ALT
@@ -4272,11 +4362,13 @@ __Usage () {
             do
                 if [[ $optset =~ ALT ]]
                 then
-                    optflags="-${(U)opt:0:1}, --${(L)opt}"
+                    typeset optflags="-${(U)opt:0:1}, --${(L)opt}"
                 else
-                    optflags="-${(L)opt:0:1}, --${(L)opt}"
+                    typeset optflags="-${(L)opt:0:1}, --${(L)opt}"
                 fi
+                typeset -a optval
                 optval=("${(@)${(fP)${:-${optset}[$opt]}}## #}")
+                typeset optargs optdesc
                 if [[ $optset =~ ARGS ]]
                 then
                     optargs="${optval[1]}"
@@ -4327,8 +4419,10 @@ __Usage () {
         do
             for opt in ${(okP)optset}
             do
-                optflags="--${(L)opt}"
+                typeset optflags="--${(L)opt}"
+                typeset -a optval
                 optval=("${(@)${(fP)${:-${optset}[$opt]}}## #}")
+                typeset optargs optdesc
                 if [[ $optset =~ SCAL ]]
                 then
                     optargs="${optval[1]}"
@@ -4704,10 +4798,7 @@ getChildren () {
     #print ${${(@nP)${:-${a}[(I)${r:-}${r:+,}[[:digit:]]}##,type]}%,type}
     print ${(@nP)${:-${a}[(I)${r:-}${r:+,}[[:digit:]]##,type]}%,type}
 }
-GetChildIndexes () {
-    . <(localopts array_: index:)
-    print ${(@nuP)${:-${array_}[(I)${index:-}${index:+,}[0-9]##,[^,]##]}%,*}
-}
+
 
 
 :<< \
@@ -5064,15 +5155,6 @@ makeActive () {
     PARENT[index]=${pr:-}
 
 }
-active () {
-    typeset a=active i=$1 s=""; typeset -a e;
-    e=('$a\[${s:-}${s:+,}index]=$i; eval \${(k)STORAGE[(I)$i,#[^,]##]//(#m)'
-    '*/$a\[${s:-}${s:+,}\${(M)MATCH%%[^,]##}]=\${(q-)STORAGE[\$MATCH]}}')
-    print "setopt TYPESET_SILENT; typeset $a; unset $a;" 
-    _ () { print "typeset -A $a;" ${(ej..)e:#\#*} }
-    _; i=${i%%,#[^,]}; s=parent; [[ -n ${i:-} ]] && _ || return 0
-    i=${(M)i##[0-9]#}; s=drive;  [[ -n ${i:-} ]] && _ || return 0
-}
 hangingIndent () {
     . <(localopts linespacing wrapcol: text: margin: indent:)
     text=${text:-$1}
@@ -5216,6 +5298,8 @@ smartWrap () {
     '}'
     )
 
+    typeset notblock wrapline
+    typeset -a wraplines
     for line in "${(@ej::)e#\"\"}"
     do
 
