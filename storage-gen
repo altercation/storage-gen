@@ -32,7 +32,7 @@ with the following command
 
 To create a configuration script for a typical new Arch Linux system, you
 could use the following commands (these only output text or tree information,
-they do not execute any changes to the system)
+**they do not execute any changes to the system**)
 
     # storage-gen new-simple
     # storage-gen new-simple --tree
@@ -78,7 +78,7 @@ use this
 
 ### Automatically creates this script
 
-Note that it does *not* automatically run this script. You may save it via standard output redirection or using the `--output` command line option. This gives you the important opportunity to review the output and make changes to either the template or the raw script output itself.
+Note that it does **not** automatically run this script. You may save it via standard output redirection or using the `--output` command line option. This gives you the important opportunity to review the output and make changes to either the template or the raw script output itself.
 
     #!/usr/bin/env zsh
 
@@ -379,10 +379,6 @@ For example, you might have an existing filesystem that you want to mount under
 /home. To do this, just add the --keep option
 
     filesystem --mountpoint /home --keep
-
-
-
-
 ------------------------------------------------------------------------------)
 
 :<< \
@@ -447,30 +443,259 @@ type
 make a getDrivePath function, same, just more specific
 ------------------------------------------------------------------------------
 
-
 :<< \
 ------------------------------------------------------------------------------
+PRELOAD
+SCRIPT ENVIRONMENT & DEFAULT VALUES
 MAIN EXECUTION
 Preloads the entirety of the script so function defintion order becomes
 irrelevant. Aliases must still be defined prior to any functions that
 use them however. Of course better to avoid aliases and use functions.
 ------------------------------------------------------------------------------
 (( ${(P)+${:-PRELOAD_${s::=${${0:t}//-/}}}} )) || { typeset PRELOAD_$s;
-. $(readlink -f $0); __MAIN $@; exit; }
+. $(readlink -f $0); __MAIN $0 $*; exit; }
 
 __MAIN () {
 
+    setopt \
+        DEBUG_BEFORE_CMD \
+        ERR_EXIT \
+        EXTENDED_GLOB \
+        GLOBAL_EXPORT \
+        NO_CONTINUE_ON_ERROR \
+        NO_ERR_RETURN \
+        NO_UNSET \
+        NO_LOCAL_TRAPS \
+        NULL_GLOB \
+        TYPESET_SILENT \
+        WARN_CREATE_GLOBAL
 
-# TODO: make each of these functions independent from the globals
-# and pass all requisite values in via options
+    zmodload zsh/regex zsh/zutil
+
+    typeset -g SCRIPTNAME="${${SCRIPTPATH:=$(readlink -f $1)}:t}"
+    typeset -g SCRIPTROOT="${SCRIPTPATH:h}"
+    typeset -g SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
+    shift # __MAIN expects $0 to be passed as first positional argument
 
     # -----------------------------------------------------------------
-    # read the command line opts (provided to the __MAIN function
-    # and subsequently passed to this function again and convert
-    # to global parameters
+    # Create command line script options and associated help information
+    #
+    # The OPTS_* arrays below determine the actual processed options as well
+    # as the help output. Each UPPERCASEOPTION is converted to a --lowercase
+    # the command line value of which is assigned to the UPPERCASE parameter
+    # name. Standard OPTS_* items are also set with a single letter short
+    # form in lowercase (e.g. -l) unless they are in the *_ALT arrays, which
+    # are set using uppercase short form (e.g. -U). *_ALT arrays contain
+    # alternate options that are uppercased as single letter options (long
+    # options remain lowercase as they are, or should be, unique).
+    #
+    # --help and --usage display the short and long options computed from the
+    # arrays below. any *_ARG_* values (options with an argument) will output
+    # with the first line of the description as the argument placeholder.
+    # --help displays a brief version of each description consisting of the
+    # first line only of item.
 
-    __ProcessScriptOptionsReturning $@ \
-        --input_template_ INPUTFILE
+    makeOptArray () { typeset -Ag $1; typeset -ag OPTARRAYS; OPTARRAYS+=($1) }
+    makeOptArray OPTS_BOOL
+    OPTS_BOOL=(
+
+    HELP        "Show summary of help information.
+                 Use --usage for expanded help."
+
+    YES         "No interactive queries (pick the first 'best' answer
+                 for potential queries. For example, for missing drive
+                 entries, pick the first available, unmounted, internal
+                 drive). This option won't work with the --skip option
+                 since --yes still requires information about the current
+                 system environment."
+
+    LIST        "List builtin $SCRIPTNAME templates."
+
+    SKIP        "Skip checking the current system.
+                 Disregards the current systems drive and partition environment.
+                 Allows script to create output based on *only* the provded
+                 template (and any --drives option values provided on the
+                 command line). If you want a script that isn't valid for
+                 the current system (because either it's for an entirely
+                 different system configuration or because the target
+                 installation target is currently mounted), use this option.  
+                 Because the current system is being ignored, no interactive
+                 queries for missing values will be run in this mode."
+
+    COMPACT     "No comments in the final script.
+                 Turns off all comments and blank lines in the script output.
+                 Removing these does not change the functionality of the final
+                 script."
+
+    QUIET       "No messages or warnings.
+                 Only display actual script (or tree) output, skip informational
+                 messages (the informational messages will still be output in the
+                 script itself unless the --commentsoff option is selected. With
+                 this option, a single error message will be output to standard
+                 error if the script fails."
+
+    TREE        "Print tree diagram of output.
+                 After evaluating the storage template, a tree relationship is
+                 displayed with colors indicating key values (unless --nocolors
+                 has been used). Useful in combination with the something like
+                 \`watch -cn1\'. This option precludes final script output unless
+                 either the --script or --output options have also been provided."
+
+    USAGE       "Displays detailed usage information.
+                 Adds a summary of the types of options and arguments that are valid
+                 for each storage type entry. Redirect to a file or pipe through a
+                 pager such as less. See also the $SCRIPTNAME README available in
+                 the project git repository."
+
+    ADVANCED    "Like --help, but includes advanced options."
+
+    )
+    makeOptArray OPTS_ARGS
+    OPTS_ARGS=(
+
+    DRIVES      "'/dev/sdX,/dev/sdY'
+                 List of drive paths to use for drive items in the template
+                 (or *implied* drives - you don't need an actual drive entry).
+                 This is precisely like adding a drive --devpath /dev/sdX
+                 entry in the template (or adding a --devpath field to an
+                 existing drive entry). THIS OVERRIDES EXISTING --devpath
+                 VALUES IN THE TEMPLATE! Without this option or actual
+                 --devpath values in the template file, the user will be
+                 prompted to select drives from the live system (if then
+                 --just option hasn't been set and if --guess isn't set)."
+
+    MOUNTROOT   "'/MOUNT/ROOT/PATH'
+                 Preinstall mount root. Default is /mnt.
+                 Set mount root directory (if not set, use the default '/mnt').
+                 Argument is a valid, absolute path to an existing directory.
+                 This path is used during system installation as a chroot  and
+                 is *not* recorded in any fstab."
+
+    )
+    makeOptArray OPTS_BOOL_ALT
+    OPTS_BOOL_ALT=(
+
+    ALPHA       "Whistle on past the alpha warning."
+
+    DEBUG       "Turn on debug tracking; always save debug log.
+                 This option turns on minimal debug tracking and rolling script
+                 trace capture (in case of error). This has a minimal performance
+                 impact so is normally off. The debug log is saved by by default
+                 if the script encounters an error, and the debug file path will be
+                 displayed in that case or with the use of this option. This debug
+                 file contains the block device configuration and the original
+                 template file content. It may be submitted with bug reports."
+
+    KEEP        "Keep all existing partitions.
+                 Prevents disk formatting, even if no actual
+                 '--keep' or '--replace' options have been set on
+                 partitions in the template. Without at least one partition
+                 with one of those options OR this command line option, the
+                 final script will include a disk format command. With this
+                 option on the command line, no disk formatting will occur
+                 and existing partitions will be preserved (unless --replace
+                 has been specified for a partitio)."
+
+    FORCE       "Force the script to always output to console.
+                 This happens by default UNLESS either the --tree or --output
+                 options have been passed on the command line. In these cases,
+                 passing the --script option restores the visual output of the
+                 script as well."
+
+    README      "Output usage in README markdown format."
+
+    COLOROFF    "Do not use colors in console output."
+
+    INFEROFF    "Turn off inference of missing values."
+
+    LISTCODES   "List GUID type codes in short and long."
+
+    MULTIPASS   "Output individual passphrase query blocks.
+                 If multiple encryption items exist $SCRIPTNAME normally creates a
+                 single passphrase query in the final executable script. With this
+                 option, each encryption device without a preset passphrase will
+                 receive a separate passphrase query step in the final script.
+                 Yes, it's a multipass,"
+
+    NOMATCH     "No matching existing partitions.
+                 Normally, if the --keep or --replace option has been specified
+                 (or inherited) by a partition entry in the storage template (or
+                 a partition implied by another entry), $SCRIPTNAME will make
+                 best effort to match it to an existing partition based on
+                 available information in the template and on the system itself.
+                 See the --usage section on matching for more information."
+
+    ENVDEBUG    "Dump environment values for debugging."
+
+    VERBOSE     "Display details during processing."
+
+    WARNOFF     "Turn off warning query in script output."
+
+    )
+    makeOptArray OPTS_ARGS_ALT
+    OPTS_ARGS_ALT=(
+
+    OUTPUT      "OUTPUT_FILE_NAME
+                 Optional output filename.
+                 If this option is provided, the final executable script will be
+                 written to the path provided. If not set, script is displayed on
+                 standard output and may be saved using redirection."
+
+    SOURCEDEBUG "FILENAME
+                 Simulate environment from debug file.
+                 $SCRIPTNAME will read the captured debug output from the provided
+                 file and use it to simulate a system environment. Simulated values
+                 include the block device configuration and the original template
+                 file content."
+
+    TEMPLATE    "TEMPLATE_FILE_PATH
+                 Alternative syntax for source template.
+                 $SCRIPTNAME normally uses arg 1 (the first 'unnamed' argument) on
+                 the command line as the name (or path) of the template to use.
+                 This option is merely a more explicit alternative to that."
+
+    )
+    # currently unused, these provide optional zparseopts options
+    # it should be noted that these don't work on the command line if there is
+    # any space between the option and value, so '--myoptional value' will return
+    # true, not "value" (which will remain in the options list). The correct form
+    # for optional values is without a space, so: "--myoptionalvalue" or "-mvalue"
+    # or "-m=value" or "--myoptional=value".
+    makeOptArray OPTS_OPT
+    makeOptArray OPTS_OPT_ALT
+
+    # original command line options were passed to the __MAIN function
+    typeset -a COMMAND_LINE_OPTIONS
+    COMMAND_LINE_OPTIONS=($*)
+
+    __InitializeScriptOptargs \
+        --command_line_                 COMMAND_LINE \
+        --command_line_options_a_       COMMAND_LINE_OPTIONS \
+        --global_option_definitions_a_  OPTARRAYS \
+        --script_name_                  SCRIPTNAME \
+        --drives_option_                DRIVES \
+        --input_option_                 INPUT \
+        --input_template_               INPUTFILE
+
+    __InitializeColor \
+        --color_a_                      COLOR \
+        --nocolor_option_               COLOROFF
+
+    __InitializeMountroot \
+        --mountroot_                    MOUNTROOT
+
+    __InitializeTrapsAndLog \
+        --command_line_                 COMMAND_LINE \
+        --debug_option_                 DEBUG \
+        --debug_log_                    DEBUGLOG \
+        --input_filename_               INPUTFILE \
+        --input_filepath_               SOURCEFILE \
+        --storage_tree_                 STORAGE \
+        --system_data_                  SYSTEM \
+        --file_raw_data_                FILERAW \
+        --storage_tree_                 STORAGE \
+        --script_name_                  SCRIPTNAME \
+        --script_temp_                  SCRIPTTEMP
 
     # -----------------------------------------------------------------
     # terra incognita warning
@@ -482,7 +707,7 @@ __MAIN () {
     # relationships. this determines the expansion and validition
     # proecesses later
 
-    track __initializeRulesets
+    track __InitializeRulesets
 
     # -----------------------------------------------------------------
     # drop out for usage/help. usage reads data from the rulesets
@@ -630,8 +855,6 @@ __MAIN () {
         --siblings_array        SIBLINGS    \
         --valid_array           VALID
 
-__test
-exit
     # -----------------------------------------------------------------
     # check that basic relationships and required values are
     # present (based on rulesets) - could run this AFTER
@@ -997,263 +1220,39 @@ __MAIN execution. This includes the script environment section immediately
 following this, which is within the same scope as the preload.
 ------------------------------------------------------------------------------
 
-:<< \
-------------------------------------------------------------------------------
-SCRIPT ENVIRONMENT & DEFAULT VALUES
-
-this is the only section within same scope as the preload, everything else
-should be a function
-------------------------------------------------------------------------------
-
-setopt NO_ERR_RETURN ERR_EXIT NO_UNSET GLOBAL_EXPORT EXTENDED_GLOB NULL_GLOB \
-       DEBUG_BEFORE_CMD TYPESET_SILENT #WARN_CREATE_GLOBAL
-setopt NO_CONTINUE_ON_ERROR
-       #TODO - clean up script using WARN_CREATE_GLOBAL
-
-zmodload zsh/regex zsh/zutil
-
-SCRIPTNAME="${${SCRIPTPATH:=$(readlink -f $0)}:t}"
-SCRIPTROOT="${SCRIPTPATH:h}"
-SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
-
-TRAPEXIT () { (( $status > 0 )) && DEBUG=true; trapcleanup; }
-TRAPERR () {
-    teelog \
-        --category UNHANDLED_ERROR \
-        --color red "$(print -l -- ${ROLLING:-})"
-    DEBUG=true; trapcleanup
-    debugDump
-    print "\n${COLOR[red]:-}Exit due to unhandled error." 1>&2; }
-trapcleanup  () {
-    [[ -z ${ROLLCALL:-} ]] \
-        || print -l -- "# "${^ROLLCALL} >> ${DEBUGLOG:-/dev/null}
-    [[ -n $(functions reportLog) ]] \
-        && reportLog >> ${DEBUGLOG:-/dev/null}
-    ${DEBUG:-false} \
-        && ${${DEBUGLOG:+true}:-false} \
-        && { mv $DEBUGLOG $DEBUGLOG_SAVE;
-    print "\n${COLOR[red]:-}Debug log saved to $DEBUGLOG_SAVE" 1>&2; } || :
-    [[ -d "${SCRIPTTEMP:-}" ]] && rm -rf "$SCRIPTTEMP"; }
-command_not_found_handler () {
-    # ugly. if a command is not found in a function being used by an
-    # conditional (or at least certainly in an if... block) I can't
-    # identify the correct method of forcing a full exit, not just returning
-    # an error code.
-    DEBUG=true
-    print "\n$1 - Command not found. Terminating script.\n" 1>&2
-    trapcleanup
-    kill 0
-}
 
 :<< \
 ------------------------------------------------------------------------------
 Main Sequence Functions
 ------------------------------------------------------------------------------
-__ProcessScriptOptionsReturning () {
-    . <(localopts input_template_:)
-
-    # Command line options
-    #
-    # The OPTS_* arrays below determine the actual processed options as well
-    # as the help output. Each UPPERCASEOPTION is converted to a --lowercase
-    # the command line value of which is assigned to the UPPERCASE parameter
-    # name. Standard OPTS_* items are also set with a single letter short
-    # form in lowercase (e.g. -l) unless they are in the *_ALT arrays, which
-    # are set using uppercase short form (e.g. -U). *_ALT arrays contain
-    # alternate options that are uppercased as single letter options (long
-    # options remain lowercase as they are, or should be, unique).
-    #
-    # --help and --usage display the short and long options computed from the
-    # arrays below. any *_ARG_* values (options with an argument) will output
-    # with the first line of the description as the argument placeholder.
-    # --help displays a brief version of each description consisting of the
-    # first line only of item.
-
-    makeOptArray () { typeset -Ag $1; typeset -ag OPTARRAYS; OPTARRAYS+=($1) }
-
-    makeOptArray OPTS_BOOL
-    OPTS_BOOL=(
-
-    HELP        "Show summary of help information.
-                 Use --usage for expanded help."
-
-    YES         "No interactive queries (pick the first 'best' answer
-                 for potential queries. For example, for missing drive
-                 entries, pick the first available, unmounted, internal
-                 drive). This option won't work with the --skip option
-                 since --yes still requires information about the current
-                 system environment."
-
-    LIST        "List builtin $SCRIPTNAME templates."
-
-    SKIP        "Skip checking the current system.
-                 Disregards the current systems drive and partition environment.
-                 Allows script to create output based on *only* the provded
-                 template (and any --drives option values provided on the
-                 command line). If you want a script that isn't valid for
-                 the current system (because either it's for an entirely
-                 different system configuration or because the target
-                 installation target is currently mounted), use this option.  
-                 Because the current system is being ignored, no interactive
-                 queries for missing values will be run in this mode."
-
-    COMPACT     "No comments in the final script.
-                 Turns off all comments and blank lines in the script output.
-                 Removing these does not change the functionality of the final
-                 script."
-
-    QUIET       "No messages or warnings.
-                 Only display actual script (or tree) output, skip informational
-                 messages (the informational messages will still be output in the
-                 script itself unless the --commentsoff option is selected. With
-                 this option, a single error message will be output to standard
-                 error if the script fails."
-
-    TREE        "Print tree diagram of output.
-                 After evaluating the storage template, a tree relationship is
-                 displayed with colors indicating key values (unless --nocolors
-                 has been used). Useful in combination with the something like
-                 \`watch -cn1\'. This option precludes final script output unless
-                 either the --script or --output options have also been provided."
-
-    USAGE       "Displays detailed usage information.
-                 Adds a summary of the types of options and arguments that are valid
-                 for each storage type entry. Redirect to a file or pipe through a
-                 pager such as less. See also the $SCRIPTNAME README available in
-                 the project git repository."
-
-    ADVANCED    "Like --help, but includes advanced options."
-
-    )
-    makeOptArray OPTS_ARGS
-    OPTS_ARGS=(
-
-    DRIVES      "'/dev/sdX,/dev/sdY'
-                 List of drive paths to use for drive items in the template
-                 (or *implied* drives - you don't need an actual drive entry).
-                 This is precisely like adding a drive --devpath /dev/sdX
-                 entry in the template (or adding a --devpath field to an
-                 existing drive entry). THIS OVERRIDES EXISTING --devpath
-                 VALUES IN THE TEMPLATE! Without this option or actual
-                 --devpath values in the template file, the user will be
-                 prompted to select drives from the live system (if then
-                 --just option hasn't been set and if --guess isn't set)."
-
-    MOUNTROOT   "'/MOUNT/ROOT/PATH'
-                 Preinstall mount root. Default is /mnt.
-                 Set mount root directory (if not set, use the default '/mnt').
-                 Argument is a valid, absolute path to an existing directory.
-                 This path is used during system installation as a chroot  and
-                 is *not* recorded in any fstab."
-
-    )
-    makeOptArray OPTS_BOOL_ALT
-    OPTS_BOOL_ALT=(
-
-    ALPHA       "Whistle on past the alpha warning."
-
-    DEBUG       "Turn on debug tracking; always save debug log.
-                 This option turns on minimal debug tracking and rolling script
-                 trace capture (in case of error). This has a minimal performance
-                 impact so is normally off. The debug log is saved by by default
-                 if the script encounters an error, and the debug file path will be
-                 displayed in that case or with the use of this option. This debug
-                 file contains the block device configuration and the original
-                 template file content. It may be submitted with bug reports."
-
-    KEEP        "Keep all existing partitions.
-                 Prevents disk formatting, even if no actual
-                 '--keep' or '--replace' options have been set on
-                 partitions in the template. Without at least one partition
-                 with one of those options OR this command line option, the
-                 final script will include a disk format command. With this
-                 option on the command line, no disk formatting will occur
-                 and existing partitions will be preserved (unless --replace
-                 has been specified for a partitio)."
-
-    FORCE       "Force the script to always output to console.
-                 This happens by default UNLESS either the --tree or --output
-                 options have been passed on the command line. In these cases,
-                 passing the --script option restores the visual output of the
-                 script as well."
-
-    README      "Output usage in README markdown format."
-
-    COLOROFF    "Do not use colors in console output."
-
-    INFEROFF    "Turn off inference of missing values."
-
-    LISTCODES   "List GUID type codes in short and long."
-
-    MULTIPASS   "Output individual passphrase query blocks.
-                 If multiple encryption items exist $SCRIPTNAME normally creates a
-                 single passphrase query in the final executable script. With this
-                 option, each encryption device without a preset passphrase will
-                 receive a separate passphrase query step in the final script.
-                 Yes, it's a multipass,"
-
-    NOMATCH     "No matching existing partitions.
-                 Normally, if the --keep or --replace option has been specified
-                 (or inherited) by a partition entry in the storage template (or
-                 a partition implied by another entry), $SCRIPTNAME will make
-                 best effort to match it to an existing partition based on
-                 available information in the template and on the system itself.
-                 See the --usage section on matching for more information."
-
-    ENVDEBUG    "Dump environment values for debugging."
-
-    VERBOSE     "Display details during processing."
-
-    WARNOFF     "Turn off warning query in script output."
-
-    )
-    makeOptArray OPTS_ARGS_ALT
-    OPTS_ARGS_ALT=(
-
-    OUTPUT      "OUTPUT_FILE_NAME
-                 Optional output filename.
-                 If this option is provided, the final executable script will be
-                 written to the path provided. If not set, script is displayed on
-                 standard output and may be saved using redirection."
-
-    SOURCEDEBUG "FILENAME
-                 Simulate environment from debug file.
-                 $SCRIPTNAME will read the captured debug output from the provided
-                 file and use it to simulate a system environment. Simulated values
-                 include the block device configuration and the original template
-                 file content."
-
-    TEMPLATE    "TEMPLATE_FILE_PATH
-                 Alternative syntax for source template.
-                 $SCRIPTNAME normally uses arg 1 (the first 'unnamed' argument) on
-                 the command line as the name (or path) of the template to use.
-                 This option is merely a more explicit alternative to that."
-
-    )
-    # currently unused, these provide optional zparseopts options
-    # it should be noted that these don't work on the command line if there is
-    # any space between the option and value, so '--myoptional value' will return
-    # true, not "value" (which will remain in the options list). The correct form
-    # for optional values is without a space, so: "--myoptionalvalue" or "-mvalue"
-    # or "-m=value" or "--myoptional=value".
-    makeOptArray OPTS_OPT
-    makeOptArray OPTS_OPT_ALT
-
-#    FSTAB       "(not yet implemented)"
+__InitializeScriptOptargs () {
+    . <(localopts \
+        command_line_options_a_:        \
+        global_option_definitions_a_:   \
+        command_line_:                  \
+        script_name_:                   \
+        drives_option_:                 \
+        input_option_:                  \
+        input_template_:                )
 
     # capture the original command line for logging
-    typeset command_line="$SCRIPTNAME $*"
+    typeset -g $command_line_
+    eval $command_line_'="${(P)script_name_} ${(Pq-)command_line_options_a_}"'
 
     # check for collisions in option short/long forms
-    typeset case colon; typeset -a opts cmd; opts=(); cmd=()
-    for optarray in $OPTARRAYS
+    typeset case; typeset -a opts cmd; opts=(); cmd=()
+    for optarray in ${(P)global_option_definitions_a_}
     do
         [[ $optarray =~ _ALT ]] && case="U" || case="L"
-        e=('${(k)='
-           $optarray'//(#b)(*)/${${('
-           $case')=match}:0:1} ${(L)match}}')
-           opts+=(${=${(ej::)e}})
+        typeset -a e
+        e=( '${(k)='
+            $optarray'//(#b)(*)/${${('
+            $case')=match}:0:1} ${(L)match}}'
+            )
+        opts+=(${=${(ej::)e}})
     done
+    # compare total number of defined options against total unique options
+    # (should be the same, otherwise we have a collision)
     if [[ ${#opts} -gt ${#${(u)opts}} ]]
     then
         typeset opt
@@ -1273,10 +1272,14 @@ __ProcessScriptOptionsReturning () {
                 break
             fi
         done
-        fail "Two $SCRIPTNAME options have identical short or long forms;
+        fail "Two $script_name_ options have identical short or long forms;
               Please change one of the option names or move to an ALT
               or long form only option array."
     fi
+
+    # set the command line options to active parameter array for zparseopts
+    set -- ${(@P)command_line_options_a_}
+
     # run zparseopts on all defined script options
     # note that options (the keys of the above options associative array)
     # may be listed in the array either upper or lower case, but the
@@ -1284,11 +1287,12 @@ __ProcessScriptOptionsReturning () {
     # are always UPPERCASE and the short options are either -l lower or
     # -U upper depending on whether they are in an _ALT array.
     typeset case colon; typeset -a cmd; cmd=()
-    for optarray in $OPTARRAYS
+    for optarray in ${(P)global_option_definitions_a_}
     do
         [[ $optarray =~ _ARG ]] && colon=":" || colon=""
         [[ $optarray =~ _OPT ]] && colon="::"
         [[ $optarray =~ _ALT ]] && case="U" || case="L"
+        typeset -a e
         e=('${(k)'
            $optarray'//(#b)(*)/${${('
            $case')=match}:0:1}'
@@ -1299,15 +1303,16 @@ __ProcessScriptOptionsReturning () {
 
     # clean up the parsed options and assign to variables matching their names
     # (so that TESTMODE, for example. receives a true/null value, DRIVES
-    # receives and array value, etc.)
-    for optarray in ${(M)OPTARRAYS:#*_BOOL*}
+    # receives an array value, etc.)
+    for optarray in ${(PM)global_option_definitions_a_:#*_BOOL*}
     do
+        typeset -a e
         e=('${(k)'$optarray'//(#b)(*)/${m::=$match}=${${(P)m::=${(P)m:+true}}:-}}')
         typeset -g ${=${(ej::)e}}
     done
 
     # if the _OPT (optional value) items have been set, see if they need a true
-    for optarray in ${(M)OPTARRAYS:#*_OPT*}
+    for optarray in ${(PM)global_option_definitions_a_:#*_OPT*}
     do
         [[ $optarray =~ _ALT ]] && case="U" || case="L"
         for opt in ${(Pk)optarray}
@@ -1321,23 +1326,11 @@ __ProcessScriptOptionsReturning () {
     done
 
     # options that take arguments (will end up as arrays)
-    for optarray in ${(M)OPTARRAYS:#*_ARG*}
+    for optarray in ${(PM)global_option_definitions_a_:#*_ARG*}
     do
         [[ -n ${(Pk)optarray} ]] && eval typeset -ag ${(Pk)optarray} || continue
         eval ${(Pk)optarray//(#b)(*)/$match=(${${(P)${:-${match}[2]}:-}#=})}
     done
-
-    # Prep color array, otherwise no color values if coloroff is set
-    if ! ${COLOROFF:-false}; then
-        typeset -Ag COLOR COLOR
-        autoload colors; colors
-        for color in ${(k)fg_no_bold}; do
-            COLOR[$color]=${fg_no_bold[$color]}
-            COLOR[$color,bold]=${fg_bold[$color]}
-        done
-    else
-        unset COLOR
-    fi
 
     # check remainder of command line; should have only one option
     # (positional only) with no leading - or --
@@ -1351,14 +1344,13 @@ __ProcessScriptOptionsReturning () {
 
     # the input file can be set by --input or arg 1
     typeset -g ${input_template_}
-    if [[ -n ${INPUT:-} ]]
+    if [[ -n ${(P)input_option_:-} ]]
     then
         # if input template name was supplied with --input option
-        eval ${input_template_}'=${INPUT}'
+        eval ${input_template_}'=${(P)input_option_}'
     else
         # else if it was positional
         eval ${input_template_}'=${1:-}'
-
         # shift the options so we can run a check on leftover
         # command line content (below)
         [[ -n ${1:-} ]] && shift || :
@@ -1368,50 +1360,134 @@ __ProcessScriptOptionsReturning () {
     # if we do, fail
     [[ -z ${*:-} ]] || fail "Unknown command line content: $*" 
 
+    # Convert DRIVES values from csv
+    [[ -z ${(P)drives_option_:-} ]] || {
+    eval $drives_option_'=(${=${(s:,:)${(P)drives_option_}}})' }
+}
+__InitializeColor () {
+    . <(localopts \
+       color_a_:        \
+       nocolor_option_: )
+    # Prep color array, otherwise no color values if coloroff is set
+    if ! ${(P)nocolor_option_:-false}; then
+        typeset -Ag $color_a_
+        autoload colors; colors
+        for color in ${(k)fg_no_bold}; do
+            eval $color_a_'[$color]=${fg_no_bold[$color]}'
+            eval $color_a_'[$color,bold]=${fg_bold[$color]}'
+        done
+    else
+        unset $color_a_
+    fi
+}
+__InitializeMountroot () {
+    . <(localopts \
+       mountroot_: )
     # Make sure we have user specified or default mountroot directory
-    typeset m="${MOUNTROOT:-}"
+    typeset m="${(P)mountroot_:-}"
     # we're going to either assign or reassign as a scalar and it comes
     # in as an array from our options processing
     # so unset first, then assign existing or default value
     # TODO: this could be a one liner if I unset inside an assignment
     # or possibly if I force set?
-    unset MOUNTROOT; typeset -g MOUNTROOT="${m:-/mnt}"
-    [[ ${MOUNTROOT} =~ "/" ]] || MOUNTROOT="${$(pwd)%/}/${MOUNTROOT}"
-    [[ -d ${MOUNTROOT} ]] || {
+    unset $mountroot_; typeset -g $mountroot_="${m:-/mnt}"
+    [[ ${(P)mountroot_} =~ "/" ]] || $mountroot_="${$(pwd)%/}/${(P)mountroot_}"
+    [[ -d ${(P)mountroot_} ]] || {
         __Usage --mini
-        fail "ERROR: Mountroot directory $MOUNTROOT not found."
+        fail "ERROR: Mountroot directory ${(P)mountroot_} not found."
         }
-
-    # Convert DRIVES values from csv
-    [[ -n ${DRIVES:-} ]] && { DRIVES=(${=${(s:,:)DRIVES}}) }
-
+}
+__InitializeTrapsAndLog () {
+    . <(localopts \
+        command_line_: \
+        debug_option_: \
+        debug_log_: \
+        storage_tree_: \
+        system_data_: \
+        input_filename_: \
+        input_filepath_: \
+        file_raw_data_: \
+        script_name_: \
+        script_temp_: )
     # debug log and a path to move it to if script fails
     # (so don't make user re run with --debug on a bad error)
     # DLHOST=${SCRIPTNAME}${${(%)${:-%D}}//-/}.debug
     # DLTIME=${SCRIPTNAME}${HOST:+-}${HOST:-}.debug
-    typeset -g DEBUGLOG_BASE=${SCRIPTNAME}.debug
-    typeset -g DEBUGLOG_SAVE=/tmp/$DEBUGLOG_BASE
-    typeset -g DEBUGLOG=$SCRIPTTEMP/$DEBUGLOG_BASE
-    if [[ -e $DEBUGLOG_SAVE ]]
+    typeset debug_log_base=${(P)script_name_}.debug
+    typeset debug_log_save=/tmp/$debug_log_base
+    typeset -g $debug_log_=${(P)script_temp_}/$debug_log_base
+    if [[ -e $debug_log_save ]]
     then
-        rm -f $DEBUGLOG_SAVE || \
-        fail "Cannot remove existing debug log at $DEBUGLOG_SAVE"
+        rm -f $debug_log_save || \
+        fail "Cannot remove existing debug log at $debug_log_save"
     fi
+
     # prep debug log header
     typeset -a debug_log_header
     debug_log_header=(
-    "# ${(U)SCRIPTNAME} DEBUG LOG"
+    "# ${(UP)script_name_} DEBUG LOG"
     "# DATE:         $(date)"
     "# RUN AS:       ${${(M)USERNAME:#root}:-non-root}"
     "# ZSH VERSION:  $ZSH_VERSION"
-    "# COMMAND LINE: $command_line"
-    "# SUBMIT TO:    $SCRIPTNAME@ethanschoonover.com\n"
-    "typeset -gA SYSTEM"
-    "typeset -ga FILERAW"
+    "# COMMAND LINE: ${(P)command_line_}"
+    "# SUBMIT TO:    ${(P)script_name_}@ethanschoonover.com\n"
+    "typeset -gA $system_data_"
+    "typeset -ga $file_raw_data_"
     )
-    print -l -- $debug_log_header > $DEBUGLOG
+    print -l -- $debug_log_header > ${(P)debug_log_}
 
-    ${DEBUG:-false} && {
+    # turn off tracking if debug isn't active
+    ${(P)debug_option_:-false} || { track () { eval $@ } }
+
+    eval 'TrapCleanup  () {
+            typeset dlog='${(P)debug_log_}' stemp='${(P)script_temp_}';
+            if [[ -f ${dlog:-} ]]
+            then
+                if [[ -n ${ROLLCALL:-} ]]
+                then
+                    print -l -- "# "${^ROLLCALL} >> ${dlog:-/dev/null};
+                fi
+                if [[ -n $(functions reportLog) ]]
+                then
+                    ( reportLog >> ${dlog:-/dev/null} ) || :
+                fi
+                ( ! ${'$debug_option_':-false} ) || {
+                    mv $dlog ${debug_log_save::=/tmp/${dlog:t}};
+                    print -n "\n${COLOR[red]:-}" 1>&2;
+                    print "Debug log saved to $debug_log_save" 1>&2; };
+            fi
+            if [[ -d ${stemp:-} ]]
+            then
+                    rm -rf $stemp
+            fi
+            }'
+
+    # using zshexit for script cleanup since TRAPEXIT runs on every function
+    # exit
+    eval 'zshexit () {
+            (( $status > 0 )) \
+            && '$debug_option_'=true;
+            print "Exiting...";
+            TrapCleanup;
+            }'
+
+    eval 'TRAPERR () {
+            teelog --category UNHANDLED_ERROR --color red \
+                "$(print -l -- ${ROLLING:-})";
+            '$debug_option_'=true; TrapCleanup; debugDump;
+            print -n "\n${COLOR[red]:-}" 1>&2;
+            print "Exit due to unhandled error." 1>&2; }'
+
+    # ugly. if a command is not found in a function being used by a
+    # conditional (or at least certainly in an if... block) I cannot
+    # identify the correct method of forcing a full exit, not just
+    # returning an error code. there must be a better way. TODO
+    eval 'command_not_found_handler () { '$debug_option_'=true;
+            print "\n$1 - Command not found. Terminating script.\n" 1>&2;
+            TrapCleanup; kill 0; }'
+
+    # if in debug mode, keep a rolling execution record
+    ${(P)debug_option_:-false} && {
         typeset -g VERBOSE=true
         typeset -g QUIET=""
         typeset -ag ROLLING
@@ -1422,26 +1498,78 @@ __ProcessScriptOptionsReturning () {
             done
             ROLLING[5]=$ZSH_DEBUG_CMD;
         }
-    } || {
-    track () { eval $@ }
     }
+    eval 'debugDump () {
+            . <(localopts array:)
+            if [[ ${(Pt)array:-} == array ]]
+            then
+                print -l -- ${(P)array}
+            elif [[ -n ${1:-'$storage_tree_'} ]]
+            then
+                typeset array=${array:-${1:-'$storage_tree_'}}
+                typeset -a keys; typeset key; typeset -i padding
+                keys=(${${(n)${(Pk)array//,/\\000}}//\\000/,})
+                padding=${#${(OPk)array//?/#}[1]}
+                print
+                for key in $keys
+                do
+                    hangingIndent \
+                        --margin 2 \
+                        --indent $(( $padding + 3 )) \
+                        --text \
+                        "${(r.$padding...)key} : ${(P)${:-${array}[$key]}}"
+                done
+            fi
+            if ${TREE:-false} && [[ -n ${'$storage_tree_':-} ]]
+            then
+                __printTree \
+                    --input_array       '$storage_tree_' \
+                    --tree_option       TREE \
+                    --input_filename    '$input_filename_' \
+                    --input_filepath    '$input_filepath_'
+            fi
+        }'
+    eval 'debugLog () {
+            typeset dlog='${(P)debug_log_}'; typeset x=$1; shift;
+            typeset width=72; print -- "\n:<< \\" >> $dlog;
+            typeset sq=${(#):-39}
+            print "$sq$x${__::=${(r:$(($width-${#x}))::--:):-}}$sq" >> $dlog;
+            print -l -- ${*} >> $dlog; print -- "$x${__}\n" >> $dlog;
+        }'
 }
-__initializeRulesets () {
+__InitializeRulesets () {
 
-    typeset -Ag FIELDS VALID VALUES CHILDREN SIBLINGS OPTIONS REQUIRED \
-        ITEMOPTIONS_BOOL ITEMOPTIONS_SCAL DESCRIPTION PRESET CODES INHERIT \
-        CONFLICTS EQUIVALENTS ANCESTORS DESCENDANTS NOCLOBBER
+    typeset  -Ag \
+        ANCESTORS \
+        CHILDREN \
+        CODES \
+        CONFLICTS \
+        DEFAULTS \
+        DESCENDANTS \
+        DESCRIPTION \
+        EQUIVALENTS \
+        FIELDS \
+        INHERIT \
+        ITEMOPTIONS_BOOL \
+        ITEMOPTIONS_SCAL \
+        MULTI \
+        NOCLOBBER \
+        OPTIONS \
+        PARENTS \
+        PRESET \
+        REQUIRED \
+        SIBLINGS \
+        VALID \
+        VALUES
 
     # the types of storage devices we know about
     # ORDER IS IMPORTANT. Items to the left are *potential* ancestors of items
-    # to the right
+    # to the right.
     VALUES[type]="drive partition logical encryption swap filesystem subvolume"
 
-    # known fstypes and short GUID codes TODO: replace the code list
-    # with the fixed list below, which includes translation to long codes
     VALUES[fstype]=${${=${listing::=$(print ${:-=mkfs}.*)}}##$(print =mkfs).}
     VALUES[code]=${(uM)${:-$(sgdisk -L)}:#([0-9]|[a-f])(#c4)}
-    print "\n# fstypes present via mkfs: ${(@)VALUES[fstype]}" >> $DEBUGLOG
+    debugLog fstypes "fstypes present via mkfs: ${(@)VALUES[fstype]}"
 
     # the fields which are valid for each storage item type
     # with 'common' fields being valid for all types
@@ -4966,40 +5094,6 @@ hangingIndent () {
     [[ -z $wrapped ]] ||
         print -l -- "${(l.$(($margin+$indent))...):-}"${^wrapped}${linespacing+\\n}
 }
-debugDump () {
-    . <(localopts array:)
-    if [[ ${(Pt)array:-} == array ]]
-    then
-        print -l -- ${(P)array}
-    else
-        typeset array=${array:-${1:-STORAGE}}
-        typeset -a keys; typeset key; typeset -i padding
-        keys=(${${(n)${(Pk)array//,/\\000}}//\\000/,})
-        padding=${#${(OPk)array//?/#}[1]}
-        print
-        for key in $keys
-        do
-            hangingIndent --margin 2 --indent $(( $padding + 3 )) \
-                --text "${(r.$padding...)key} : ${(P)${:-${array}[$key]}}"
-        done
-    fi
-    if ${TREE:-false} && [[ -n ${STORAGE:-} ]]
-    then
-        __printTree                   \
-            --input_array       STORAGE     \
-            --tree_option       TREE        \
-            --input_filename    INPUTFILE   \
-            --input_filepath    SOURCEFILE
-    fi
-}
-debugLog () {
-    typeset x=$1; shift
-    typeset width=72
-    print -- "\n:<< \\" >> $DEBUGLOG
-    print -- "'$x${__::=${(r:$(($width-${#x}))::--:):-}}'" >> $DEBUGLOG
-    print -l -- ${*} >> $DEBUGLOG
-    print -- "$x${__}\n" >> $DEBUGLOG
-}
 fail () {
     ${DEBUG:-false} && debugDump
     teelog --category FAILURE --color red "$*"
@@ -5176,7 +5270,7 @@ localopts () {
     #
     # must be called inside a function using this syntax:
     #
-    # . <(getLocalOpts optname optargname:)
+    # . <(localopts optname optargname:)
     #
     # optargs are specified with the standard zparseopts syntax other than no
     # leading - is required for long argument names. Any leading - passed to
@@ -5208,7 +5302,9 @@ localopts () {
     #   zparseopts -D -E -A o -- -myoption: -myboolean
     typeset -a e
     e=(
-    '${@'             '# expand all values passed to this function'
+    '${(o)@'          '# expand all values passed to this function, sorted
+                         to avoid zparseopts getting confused by substring
+                         matches'
     '//(#b)'          '# search using back references such as ${match[1]}'
     '(#s)'            '# search from beginning of string'
     '-#'              '# match and discard leading dashes'
@@ -5258,14 +5354,6 @@ debugCapture () {
         print >> $DEBUGLOG
     fi
 }
-track () {
-    typeset -ag ROLLCALL; ROLLCALL+=($1)
-    ${QUIET:-false} || {
-    print -n ${COLOR[cyan]:-} 1>&2
-    print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
-    print ${COLOR[default]:-} 1>&2
-    eval $@
-}
 __ListTemplates () {
     print "\nReading template files from $SCRIPTROOT/templates\n" 1>&2
     print -l -- $SCRIPTROOT/templates/***~(*README)(#q.:t) 1>&2
@@ -5276,7 +5364,7 @@ __AlphaWarning () {
     # user adds --alpha option
 
     # me on dev machine
-    DEVSTRING=es@skylla
+    typeset DEVSTRING=es@skylla
     
     ${ALPHA:-false} || [[ -z ${${:-$USERNAME@$HOST}:#$DEVSTRING} ]] && return 0
     __Usage --mini
@@ -5286,6 +5374,19 @@ __AlphaWarning () {
           again with the '--alpha' or '-A' option to skip this warning.
           Or just skip the reading and run it now, but be sensible."
     exit 1
+}
+
+:<< \
+------------------------------------------------------------------------------
+TRAPS
+------------------------------------------------------------------------------
+track () {
+    typeset -ag ROLLCALL; ROLLCALL+=($1)
+    ${QUIET:-false} || {
+    print -n ${COLOR[cyan]:-} 1>&2
+    print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
+    print ${COLOR[default]:-} 1>&2
+    eval $@
 }
 
 # vim: set filetype=sh : 
