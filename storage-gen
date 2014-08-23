@@ -2822,41 +2822,6 @@ __InflateStructure () {
     }
     while ! inflateLoop; do :; done
 }
-__reorderPartitions () {
-    # move any --size max partition to end of siblings
-    # so that it is made last by partitioning command
-    #
-    # all partitions (including the max partition) are
-    # expected to have partnums at this point
-    #
-    # reorder rest of partitions so they output in a
-    # logical fashion (not necessary other than it
-    # makes review of the output much easier)
-    fail $0
-    . <(localopts input_array:)
-    sortPartitions () {
-        . <(localopts on_drive:)
-        typeset -A partnums
-        # get all entries with partnums (thus all numbered partitions)
-        partnums=(${(kv)STORAGE[(I)$on_drive,[0-9]##,partnum]})
-        # move partitions to temp record namespace
-        for partition in ${(k)partnums%,partnum}
-        do
-            eval ${(k)STORAGE[(I)$partition,*]//(#m)*/STORAGE[TEMP,$MATCH]=${(q-)STORAGE[$MATCH]}; unset \"STORAGE[$MATCH]\"; }
-        done
-        # move partitions back to actual namespace in new order
-        for partition in ${(k)partnums%,partnum}
-        do
-            # get new index of this partition's partnum from sorted list
-            newindex=${partition%%[0-9]#}${${(@nv)partnums}[(i)$partnums[$partition,partnum]]}
-            eval ${(k)STORAGE[(I)TEMP,$partition,*]//(#b)(TEMP,)($partition)(,*)/STORAGE[$newindex$match[3]]=${(q-)STORAGE[TEMP,${match[2]}${match[3]}]}; }
-        done
-        # remove the temp values
-        eval ${(k)STORAGE[(I)TEMP,*]//(#m)*/unset \"STORAGE[$MATCH]\"; }
-    }
-    typeset drive; typeset -a drives; drives=($(getChildren))
-    for drive in $drives; do sortPartitions --on_drive $drive; done
-}
 __ScrubStructures () {
     . <(localopts \
             storage_array_: \
@@ -2883,7 +2848,6 @@ __ValidateStructures () {
 
     typeset -a children
     children=($(children --in $storage_array_ --of "${pindex:-}"))
-    children=($(getChildren ${pindex:-}))
 
     for record in $children; do
 
@@ -2946,7 +2910,7 @@ __ValidateStructures () {
         done
 
         # check that all required fields for this type exist
-        if ! activeHasNoclobber; then
+        if ! activeIsNoclobber; then
             for field in ${(P)=${:-${required_array_}[${active[type]}]}:-}
             do
                 valueInList \
@@ -2961,7 +2925,7 @@ __ValidateStructures () {
         # can make it. otherwise no fstype is required as we're just going
         # to mount and can at least give it a go without fstype
         if [[ ${active[type]} == filesystem && -z ${active[fstype]:-} ]] \
-            && ! activeHasNoclobber; then
+            && ! activeIsNoclobber; then
 
             fail "Filesystem is missing --fstype option. This would be ok
                     if the filesystem had the --noclobber option (for an
@@ -2973,7 +2937,7 @@ __ValidateStructures () {
 
         # every partition that is !noclobber must have a size at this point
         if [[ ${active[type]} == partition && -z ${active[size]:-} ]] \
-            && ! activeHasNoclobber; then
+            && ! activeIsNoclobber; then
 
             fail "Partition is missing --size option. This would be ok if
                     the partition had the --noclobber option (for an
@@ -2987,7 +2951,7 @@ __ValidateStructures () {
         if [[ ${active[type]} == partition \
             && -z ${active[devpath]:-} \
             && -z ${active[partnum]:-} ]] \
-            && { activeHasNoclobber }; then
+            && { activeIsNoclobber }; then
 
             alert "Noclobber partition entry ${record##*,} under drive
             ${record%%,*} has no --devpath or --partnum; will try to match
@@ -2997,7 +2961,7 @@ __ValidateStructures () {
         fi
 
         # validate size field value
-        if [[ -n ${active[size]:-} ]] && ! activeHasNoclobber
+        if [[ -n ${active[size]:-} ]] && ! activeIsNoclobber
         then
 
             if ! [[ ${(U)active[size]} =~ ^([0-9]*[KMGTP%]|RAM|MAX)$ ]]
@@ -3328,63 +3292,7 @@ __AssignPartitions () {
             storage_tree_:      \
             yes_to_all_:        \
             skip_system_data_:  )
-
-    # scenario 1: no skip, no noclobber, no partnums
-    #
-    # Each partition receives a partnum in sequence, from 1 to n
-
-    # scenario 2: no skip, no noclobber, all partnums
-    #
-    # each partnum assigned as is, regardless of value
-
-    # scenario 3: no skip, no clobber, some partnums
-    #
-    # partnums are assigned in sequence, making sure to skip the existing
-    # partnum value (e.g. if the partnum assigned in template is 2, then
-    # we skip that one). This implies that there is a "no-use" or "earmarked"
-    # registry of partnums
-    #
-    # or maybe we just use the existing partnum as base? probably no since
-    # we aren't keeping anything and we wil be erasing the whole drive
-
-    # scenario 4: no skip, some noclobber
-    #
-    # no clobber partitions are identified either with inferrences or
-    # via query. these are then treated as in scenario 3 (e.g. they become
-    # earmarked). or instead we use this as a base value for sequence.
-    # I don't think we can squeeze new partitions into existing partition
-    # allocations reliably). In this scenario I would suggest the user sort
-    # the partitions first.
-
-
-    # so we need to identify up front: are we formatting this drive?
-
-    # we need to infer any keep/replace partitions
-    # we earmark all partitions UP TO any existing noclobber partition
-    # (or we do this in the earmarking phase which just earmarks noclobber
-    # partitions differently... probably better)
-    # so a noclobber partition with partnum 3 will mean we earmark 1-3.
-    
-    # then we scan through for further earmarking (earmarking)
-
-    # then we sequentially number the partitions (enumeration)
-
-    # then we reorder partitions
-
-    # at some point near the end we then should identify gaps and warn
-
-#    assignPartitions__identifyExistingPartitions
-#    assignPartitions__earmarkEnumeratedPartitions
-#    assignPartitions__enumerateRemainingPartitions
-#    assignPartitions__reorderPartitionRecords
-#    assignPartitions__checkForPartitionGaps
-#
-#    for each partition in a drive
-#        if it has a part number, retain & earmark
-#        if it has no part number, if it is noclobber then infer or query, assigning part number, earmark up to this number
-
     typeset -a earmarked_partitions
-
     typeset drive
     for drive in $(children)
     do
@@ -3443,10 +3351,9 @@ AssignPartitions__IdentifyExistingPartitions () {
     do
         . <(active $partition)
         if [[ $active[type] == partition ]] \
-           && activeHasNoclobber \
+           && activeIsNoclobber \
            && ! ${(P)skip_system_data_:-false}
         then
-
             typeset matched_partnum=""
             if ! AssignPartitions_InferPartition \
                 --system_mapping_ $system_mapping_ \
@@ -3463,7 +3370,6 @@ AssignPartitions__IdentifyExistingPartitions () {
                     --system_data_ $system_data_ \
                     --return_matched_partnum_ matched_partnum
             fi
-
             if [[ -n ${matched_partnum:-} ]]
             then
                 # only update keep partitions with full system data, otherwise
@@ -3724,7 +3630,7 @@ AssignPartitions__ReorderPartitionRecords () {
         # remove the temp values
         eval ${(k)STORAGE[(I)TEMP,*]//(#m)*/unset \"STORAGE[$MATCH]\"; }
     }
-    typeset drive; typeset -a drives; drives=($(getChildren))
+    typeset drive; typeset -a drives; drives=($(children))
     for drive in $drives; do sortPartitions --on_drive $drive; done
 }
 AssignPartitions__CheckForPartitionGaps () {
@@ -3747,88 +3653,6 @@ AssignPartitions__CheckForPartitionGaps () {
               Consider whether you can resort partitions to address this
               (see 'man sgdisk' for more information)."
     }
-    done
-}
-__identifyOtherDevicePaths () {
-    # recursively add any other non-partition missing device paths
-    # check for collisions along the way (such as a drive with one
-    # device path such as /dev/sda and child partition with a path
-    # such as /dev/sdb1 ... this shouldn't usually happen since the
-    # whole point of this is really to avoid manually entering device
-    # paths other than, optionally, the drive path
-    #
-    # also check to see if we need to reorder the paritions. this
-    # is done via partnums
-    . <(localopts input_array: pindex:)
-    typeset -a children;
-    children=($(getChildren ${pindex:-}))
-    typeset -i partitionnum basepartnum
-    partitionnum=0
-    basepartnum=0
-
-    for record in $children; do
-
-        unset nominal_devpath nominal_partnum
-
-        # current record
-        makeActive $record
-        [[ -n ${STORAGE[(I)$record*noclobber]} ]] \
-            && noclobber=true  || noclobber=false
-
-        # drive ancestor of current record
-        drive=${record%%,*}
-        drivepath=${(P)${:-${input_array}[$drive,devpath]}}
-        [[ -n ${STORAGE[(I)$drive*noclobber]} ]] \
-            && drive_noclobber=true  || drive_noclobber=false
-
-        # largest partition value on drive:
-        # only check if --drives (DRIVES) hasn't been passed on command line
-        [[ -n ${DRIVES} ]] && maxpartnum=0 || {
-        maxpartnum=${${(O)${(M)=$(lsblk $drivepath\
-            -lpno NAME):#${drivepath}?##}##${drivepath}}[1]}
-        }
-
-        # if we are preserving some of the existing drive contents, then
-        # we need to offset new partition indexes from the current max base,
-        # otherwise we offset from zero
-        if $drive_noclobber; then
-            basepartnum=$maxpartnum
-        fi
-
-        # create filesystem child or encryption devpath
-        if [[ ${ACTIVE[type]} == filesystem ]] && \
-             [[ ${PARENT[type]} == encryption ]]; then
-            nominal_devpath=/dev/mapper/${PARENT[label]:-${PARENT[devpath]//\//_}}
-
-        # create logical devpath
-        elif [[ ${ACTIVE[type]} == logical ]]; then
-            print "type logical -> currently unimplemented"; exit 1
-
-        # handle all other cases
-        elif ! $noclobber
-        then
-            nominal_devpath=${PARENT[devpath]:-}
-
-        fi
-
-        # check if the calculated devpath is different from any existing path
-        if ! [[ ${ACTIVE[devpath]:=${nominal_devpath:-}} =~ \
-            ${nominal_devpath:-${ACTIVE[devpath]}} ]]; then
-            fail "devpath collision! the path listed in the storage
-            file (${ACTIVE[devpath]}) does not match the value computed based
-            on the parent device path: ${PARENT[devpath]}.  Remove
-            ${ACTIVE[type]} --devpath value or change selected drive."
-
-        # otherwise assign value to array record
-        else
-            eval $input_array'[$record,devpath]=${ACTIVE[devpath]}'
-            [[ -n ${nominal_partnum:-} ]] \
-                && eval $input_array'[$record,partnum]=${nominal_partnum:-}'
-        fi
-            
-        $0 --input_array $input_array --pindex $record \
-            ${earmarked:+--earmarked }${earmarked:-}
-
     done
 }
 __printTree () {
@@ -3890,8 +3714,7 @@ __printTree () {
         . <(localopts start_at: leader:)
 
         typeset -a children;
-        children=($(getChildren ${start_at:-}))
-
+        children=($(children --of "${start_at:-}"))
         typeset add line1 line2 line firstline
         typeset -a wrapped
 
@@ -4550,12 +4373,8 @@ ancestorOrSelfIsNoclobber () {
     done
     return 1
 }
-activeHasNoclobber () {
-    indexIsNoclobber --index ${active[index]}
-}
 activeIsNoclobber () {
-fail "$0"
-    indexIsNoclobber --index ${ACTIVE[index]}
+    indexIsNoclobber --index ${active[index]}
 }
 activeIsSet () {
 fail "$0"
@@ -4702,14 +4521,6 @@ getOtherSiblings () {
     print -- ${${(Pk)${:-${array}[(I)${pi:-}${pi:+,}[0-9]#,type]}%%,type}:|ia}
 }
 
-getChildren () {
-    . <(localopts input_array: for_record:)
-    typeset a=${input_array:-STORAGE}
-    typeset r=${for_record:-${1:-}}
-    #print ${${(@nP)${:-${a}[(I)${r:-}${r:+,}[[:digit:]]}##,type]}%,type}
-    print ${(@nP)${:-${a}[(I)${r:-}${r:+,}[[:digit:]]##,type]}%,type}
-}
-
 
 
 :<< \
@@ -4723,13 +4534,14 @@ genPartitions () {
 
     . <(localopts start_at: ignore_env:)
 
-    typeset -a children; children=($(getChildren ${start_at:-}))
+    typeset -a children
+    children=($(children --of "${start_at:-}"))
 
     for record in $children; do
 
-        makeActive $record
+        . <(active $record)
 
-        if [[ ${ACTIVE[type]} == drive ]]
+        if [[ ${active[type]} == drive ]]
         then
             
             sectionHeader partitions
@@ -4740,7 +4552,7 @@ genPartitions () {
                 typeset ncvalues
                 ncvalues="${:-'--${^=NOCLOBBER[partition]}'}"
                 eval $outputvar'+=(
-                "\n\n# DRIVE - ${ACTIVE[devpath]}\n$__"
+                "\n\n# DRIVE - ${active[devpath]}\n$__"
                 "# DRIVE CONTENTS PRESERVED (no drive wipe performed) due to"
                 "# $ncvalues having been set on partition entries"
                 )'
@@ -4754,22 +4566,22 @@ genPartitions () {
                 msg4="# create new gpt structure"
                 eval $outputvar'+=(
                 "backupdir=\$(mktemp --tmpdir=/tmp -d part-backup-XXX)"
-                "backupfile=\"\$backupdir/${ACTIVE[devpath]//\//_}_backup\""
+                "backupfile=\"\$backupdir/${active[devpath]//\//_}_backup\""
                 "sgdisk --backup=\$backupdir $msg1"
                 "print \"Partition table backed up to \$backupdir\" 1>&2"
-                "sgdisk --zap-all ${ACTIVE[devpath]} $msg3" 
-                "sgdisk --mbrtogpt --clear ${ACTIVE[devpath]} $msg4"
+                "sgdisk --zap-all ${active[devpath]} $msg3" 
+                "sgdisk --mbrtogpt --clear ${active[devpath]} $msg4"
                 )'
 
             fi
         fi
 
-        if [[ ${ACTIVE[type]} == partition ]] && activeIsSet replace
+        if [[ ${active[type]} == partition ]] && activeIsSet replace
         then
 
             ${(P)ignore_env:-false} && fail "Cannot process --replace
             partitions while --$ignore_env is set."
-            if [[ -n ${SYSTEM:-} && -n ${SYSTEM[${ACTIVE[devpath]},start]:-} ]]
+            if [[ -n ${SYSTEM:-} && -n ${SYSTEM[${active[devpath]},start]:-} ]]
             then
                 msg=""
                 [[ $USERNAME == root ]] || msg=", most probably
@@ -4780,26 +4592,26 @@ genPartitions () {
             fi
             sgdisk_msg="# Delete existing partition, recreate it"
             sgdisk_cmd="sgdisk"
-            sgdisk_cmd+=" --delete=${ACTIVE[partnum]}"
-            sgdisk_cmd+=" --new=${ACTIVE[partnum]}:"
-            sgdisk_cmd+="$SYSTEM[$ACTIVE[devpath],start]}:"
-            sgdisk_cmd+="$SYSTEM[$ACTIVE[devpath],end]} "
+            sgdisk_cmd+=" --delete=${active[partnum]}"
+            sgdisk_cmd+=" --new=${active[partnum]}:"
+            sgdisk_cmd+="$SYSTEM[$active[devpath],start]}:"
+            sgdisk_cmd+="$SYSTEM[$active[devpath],end]} "
             sgdisk_cmd+="${PARENT[devpath]}"
             eval $outputvar'+=("$sgdisk_cmd $sgdisk_msg")'
         fi
 
-        if [[ ${ACTIVE[type]} == partition ]] && ! activeIsNoclobber
+        if [[ ${active[type]} == partition ]] && ! activeIsNoclobber
         then
 
             sgdisk_cmd="sgdisk"
 
-            if [[ ${(L)ACTIVE[size]} =~ "^max" ]]; then
-                sgdisk_cmd+=" --largest-new=${ACTIVE[partnum]}"
+            if [[ ${(L)active[size]} =~ "^max" ]]; then
+                sgdisk_cmd+=" --largest-new=${active[partnum]}"
                 #moving to 0 in lieu of specific partnum
                 #sgdisk_cmd+=" --largest-new=0"
                 sgdisk_msg="# create partition filling remaining space"
-            elif [[ ${(L)ACTIVE[size]} =~ "ram" ]]; then
-                sgdisk_cmd+=" --new=${ACTIVE[partnum]}:0:"
+            elif [[ ${(L)active[size]} =~ "ram" ]]; then
+                sgdisk_cmd+=" --new=${active[partnum]}:0:"
                 #moving to 0 in lieu of specific partnum
                 #sgdisk_cmd+=" --new=0:0:"
                 sgdisk_cmd+="$(( ${${(f)$(cat /proc/meminfo \
@@ -4807,20 +4619,20 @@ genPartitions () {
                    / 1000000 ))G"
                 sgdisk_msg="# create partition matching system ram size"
             else
-                sgdisk_cmd+=" --new=${ACTIVE[partnum]}:0:+${ACTIVE[size]}"
+                sgdisk_cmd+=" --new=${active[partnum]}:0:+${active[size]}"
                 #moving to 0 in lieu of specific partnum
-                #sgdisk_cmd+=" --new=0:0:+${ACTIVE[size]}"
+                #sgdisk_cmd+=" --new=0:0:+${active[size]}"
                 sgdisk_msg="# create fixed size partition"
             fi
 
-            [[ -n "${(L)ACTIVE[bootable]:-}" ]] && \
-            sgdisk_cmd+=(" --attributes=${ACTIVE[partnum]}:set:0")
+            [[ -n "${(L)active[bootable]:-}" ]] && \
+            sgdisk_cmd+=(" --attributes=${active[partnum]}:set:0")
 
-            [[ -n "${ACTIVE[code]:-}" ]] && \
-            sgdisk_cmd+=" --typecode=${ACTIVE[partnum]}:${ACTIVE[code]}"
+            [[ -n "${active[code]:-}" ]] && \
+            sgdisk_cmd+=" --typecode=${active[partnum]}:${active[code]}"
 
-            [[ -n "${ACTIVE[label]:-}" ]] && \
-                sgdisk_cmd+=" --change-name=${ACTIVE[partnum]}:${(q-)ACTIVE[label]}"
+            [[ -n "${active[label]:-}" ]] && \
+                sgdisk_cmd+=" --change-name=${active[partnum]}:${(q-)active[label]}"
 
             eval $outputvar'+=("$sgdisk_cmd $sgdisk_msg")'
 
@@ -4837,14 +4649,15 @@ genEncryption () {
 
     . <(localopts start_at: multipass:)
 
-    typeset -a children; children=($(getChildren ${start_at:-}))
+    typeset -a children
+    children=($(children --of "${start_at:-}"))
 
     for record in $children
     do
 
-        makeActive $record
+        . <(active $record)
 
-        if [[ ${ACTIVE[type]} == encryption ]]; then
+        if [[ ${active[type]} == encryption ]]; then
 
             sectionHeader encryption
 
@@ -4852,7 +4665,7 @@ genEncryption () {
             # and we haven't already queried for the passphrase
             # (or we have multipass set), then output the query
             # script block
-            if [[ -z ${ACTIVE[pass]:-} ]] && ! ${PASSQUERY:-false}
+            if [[ -z ${active[pass]:-} ]] && ! ${PASSQUERY:-false}
             then
                 # as long as multipass isn't set, then make this
                 # the only time we create the query block
@@ -4866,23 +4679,23 @@ genEncryption () {
                 "while ! \${\${\${pass::=\$(\\"
                 "$r\"?$m1: \")}:#\$(\\"
                 "$r\"?$m2: \")}:+false};" "do print \"${(q)ta}\"; done")'
-            elif [[ -n ${ACTIVE[pass]:-} ]]
+            elif [[ -n ${active[pass]:-} ]]
             then
                 eval $outputvar'+=(
                 "# Saving a passphrase in a file is obviously insecure"
-                "pass=${(q)ACTIVE[pass]}")'
+                "pass=${(q)active[pass]}")'
             fi
             luksf="print -r \$pass | "
             luksf+="cryptsetup ${s::=${OPTIONS[luks,format]:-}}${s:+ }"
-            luksf+="${s::=${ACTIVE[luksformat]:-}}${s:+ }"
-            luksf+="luksFormat ${ACTIVE[devpath]}"
+            luksf+="${s::=${active[luksformat]:-}}${s:+ }"
+            luksf+="luksFormat ${active[devpath]}"
             lukso="print -r \$pass | "
             lukso+="cryptsetup open "
             lukso+="${s::=${OPTIONS[luks,open]:-}}${s:+ }"
-            lukso+="${s::=${ACTIVE[luksopen]:-}}${s:+ }"
-            lukso+="${s::=${ACTIVE[ssd]+${OPTIONS[luks,open,ssd]:-}}}${s:+ }"
-            lukso+="${ACTIVE[devpath]} "
-            lukso+="${(q-)ACTIVE[label]:-${ACTIVE[devpath]//\//_}} "
+            lukso+="${s::=${active[luksopen]:-}}${s:+ }"
+            lukso+="${s::=${active[ssd]+${OPTIONS[luks,open,ssd]:-}}}${s:+ }"
+            lukso+="${active[devpath]} "
+            lukso+="${(q-)active[label]:-${active[devpath]//\//_}} "
             ancestorOrSelfIsNoclobber --index $record \
                 || eval $outputvar'+=("\n# LUKS formatting" "$luksf")'
             eval $outputvar'+=("\n# LUKS open" "$lukso")'
@@ -4900,14 +4713,15 @@ genSwap () {
 
     . <(localopts start_at: )
 
-    typeset -a children; children=($(getChildren ${start_at:-}))
+    typeset -a children
+    children=($(children --of "${start_at:-}"))
 
     for record in $children
     do
 
-        makeActive $record
+        . <(active $record)
 
-        if [[ ${ACTIVE[type]} == swap ]]
+        if [[ ${active[type]} == swap ]]
         then
 
             sectionHeader swap
@@ -4915,24 +4729,24 @@ genSwap () {
             mkswap="mkswap "
             swapon="swapon "
 
-            if [[ -n ${ACTIVE[label]:-} ]]
+            if [[ -n ${active[label]:-} ]]
             then
 
-                swapid="-L ${(q-)ACTIVE[label]}"
+                swapid="-L ${(q-)active[label]}"
 
             else
 
                 msg1="# Get swap uuid (add --label on swap to use instead)\n"
                 msg2=" # get swap uuid if no label"
-                cmd="swap_uuid=\"\$(lsblk -no UUID ${ACTIVE[devpath]})\""
+                cmd="swap_uuid=\"\$(lsblk -no UUID ${active[devpath]})\""
                 eval $outputvar'+=( "$msg1$cmd$msg2" )'
                 swapid="-U \$swap_uuid"
 
             fi
 
-            swapssd+="${s::=${ACTIVE[ssd]+${OPTIONS[swap,ssd]:-}}}${s:+ }"
-            mkswap+="$swapid ${ACTIVE[devpath]}"
-            swapon+="$swapid $swapssd${ACTIVE[devpath]}"
+            swapssd+="${s::=${active[ssd]+${OPTIONS[swap,ssd]:-}}}${s:+ }"
+            mkswap+="$swapid ${active[devpath]}"
+            swapon+="$swapid $swapssd${active[devpath]}"
 
             ancestorOrSelfIsNoclobber --index $record \
                 || eval $outputvar'+=("$mkswap # make swap device")'
@@ -4952,28 +4766,29 @@ genFilesystem () {
 
     . <(localopts start_at: )
 
-    typeset -a children; children=($(getChildren ${start_at:-}))
+    typeset -a children
+    children=($(children --of "${start_at:-}"))
 
     for record in $children
     do
 
-        makeActive $record
+        . <(active $record)
 
-        if [[ ${ACTIVE[type]} == filesystem ]] \
+        if [[ ${active[type]} == filesystem ]] \
             && ! ancestorOrSelfIsNoclobber --index $record
         then
 
             sectionHeader filesystem
 
-            mkfscmd="mkfs.${f::=${ACTIVE[fstype]}} "
+            mkfscmd="mkfs.${f::=${active[fstype]}} "
             mkfscmd+="${s::=${(e)OPTIONS[mkfs]:-}}${s:+ }"
             mkfscmd+="${s::=${(e)OPTIONS[mkfs,$f]:-}}${s:+ }"
-            (( ${+ACTIVE[ssd]} )) && {
+            (( ${+active[ssd]} )) && {
             mkfscmd+="${s::=${(e)OPTIONS[mkfs,ssd]:-}}${s:+ }"
             mkfscmd+="${s::=${(e)OPTIONS[mkfs,$f,ssd]:-}}${s:+ }"
             }
-            mkfscmd+="${s::=${ACTIVE[mkfsoptions]:-}}${s:+ }"
-            mkfscmd+="${ACTIVE[devpath]}"
+            mkfscmd+="${s::=${active[mkfsoptions]:-}}${s:+ }"
+            mkfscmd+="${active[devpath]}"
             eval $outputvar'+=(
                 "$mkfscmd  # make filesystem"
                 )'
@@ -4991,7 +4806,8 @@ genMounts () {
 
     . <(localopts start_at: )
 
-    typeset -a children; children=($(getChildren ${start_at:-}))
+    typeset -a children
+    children=($(children --of "${start_at:-}"))
 
     : ${(AA)mountpoint_records::=${(kv)STORAGE[(I)*,mountpoint]%%,mountpoint}}
     : ${(A)ordered_mountpoints::=${(nv)mountpoint_records}}
@@ -5001,26 +4817,26 @@ genMounts () {
     for mountpoint in $ordered_mountpoints; do
 
         record=${(k)mountpoint_records[(r)$mountpoint]}
-        makeActive $record
-        mountpath="${${:-${(P)mountroot%/}/${ACTIVE[mountpoint]#/}}%/}"
+        . <(active $record)
+        mountpath="${${:-${(P)mountroot%/}/${active[mountpoint]#/}}%/}"
 
-        if [[ ${ACTIVE[type]} != subvolume ]]
+        if [[ ${active[type]} != subvolume ]]
         then
             mountopts=()
             mountopts+=(
                 "${OPTIONS[mount]}"
-                "${OPTIONS[mount,${ACTIVE[fstype]:-}]:-}"
+                "${OPTIONS[mount,${active[fstype]:-}]:-}"
                 )
-            (( ${+ACTIVE[ssd]} )) && {
+            (( ${+active[ssd]} )) && {
                 mountopts+=(
                 "${OPTIONS[mount,ssd]}"
-                "${OPTIONS[mount,${ACTIVE[fstype]:-},ssd]:-}"
+                "${OPTIONS[mount,${active[fstype]:-},ssd]:-}"
                 )
             }
             typeset -a mountcmd
             mountcmd=("mount")
             mountcmd+=("${(j:,:)${(u)=${(s:,:)mountopts}}}")
-            mountcmd+=("${ACTIVE[devpath]} ${mountpath}")
+            mountcmd+=("${active[devpath]} ${mountpath}")
             eval $outputvar'+=("$mountcmd")'
         else # subvolume
             eval $outputvar'+=(
@@ -5035,38 +4851,6 @@ genMounts () {
 ------------------------------------------------------------------------------
 miscellaneous utility functions
 ------------------------------------------------------------------------------
-makeActive () {
-fail $0
-    # makes all existing fields for a record into active parameters
-
-    . <(localopts arr: rec: fields: var: par:)
-
-    typeset r a v p
-    r=${rec:-${1:-}}
-    a=${arr:-STORAGE}
-    v=${var:-ACTIVE}
-    p=${par:-PARENT}
-
-    unset $v; unset $p; typeset -Ag $v $p;
-    f=${fields:-${=FIELDS[boolean]}${=FIELDS[scalar]}}
-    unset ${=f}; typeset ${=f}
-    
-    # set ACTIVE values
-    # this commented out line sets fieldname=value, not array values
-    eval ${${(Pk)${:-${a}[(I)$r,[[:alpha:]]##]}}//(#b)($r,)(?##)/${${:-
-    }:+}ACTIVE[${match[2]}]=\${$a\[${(j::)match}\]}}
-
-    # set PARENT values
-    (( ${#r//[^,]/} > 0 )) && { # commas, so has parent
-    pr=${r%,?#}; eval ${${(Pk)${:-${a}[(I)$pr,[[:alpha:]]##]}}//${${:- 
-    }:+}(#b)($pr,)(?##)/PARENT[${match[2]}]=\${$a\[${(j::)match}\]}}
-    }
-
-    # set index convenience values
-    ACTIVE[index]=$r
-    PARENT[index]=${pr:-}
-
-}
 hangingIndent () {
     . <(localopts linespacing wrapcol: text: margin: indent:)
     text=${text:-$1}
