@@ -442,10 +442,6 @@ then default to yes or first best answer.
 
 remove escaped newlines within double brackets!
 
-ACTIVE is bad, shouldn't be global. need to turn this into either a localopts
-style set function or some other local solution. it's an accident waiting to
-happen.
-
 make a "getDrivePath" function that returns correct value for each
 type
 make a getDrivePath function, same, just more specific
@@ -710,17 +706,12 @@ __MAIN () {
     __InitializeStorageFunctions \
         --storage_tree_                 STORAGE
 
+    __InitializeRulesets
+
     # -----------------------------------------------------------------
     # terra incognita warning
 
     __AlphaWarning
-
-    # -----------------------------------------------------------------
-    # read in the rulesets for block devices structures, values and
-    # relationships. this determines the expansion and validition
-    # proecesses later
-
-    track __InitializeRulesets
 
     # -----------------------------------------------------------------
     # drop out for usage/help. usage reads data from the rulesets
@@ -940,22 +931,6 @@ __MAIN () {
         --blockenv_array        SYSTEM      \
         --ignore_env            SKIP
 
-    # -----------------------------------------------------------------
-    # complete filling out of devpaths for each storage
-    # elements. TODO: could skip this and make devpathing
-    # a function... may be better?
-
-    track __identifyOtherDevicePaths        \
-        --input_array           STORAGE
-
-    # re-sort partitions in the array to reflect their
-    # partition numbers for clarity and to ensure that
-    # max-size partitions are listed last
-    # TODO: should make this ENTIRELY cosmetic and
-    # add a max/no-max check in the genPayload function
-    track __reorderPartitions               \
-        --input_array           STORAGE 
-
     # create the actual script output with partitioning,
     # filesystem creation, encryption and mounting commands
     track __genPayload                      \
@@ -1006,20 +981,22 @@ __AssumeValues () {
         typeset index
         for index in $children
         do
-            . <(active $index)
-            assumeFilesystemValues \
-                --storage_array_ $storage_array_ || return 1
-            assumePartitionValues \
-                --storage_array_ $storage_array_ || return 1
+            AssumeValues__AssumeFilesystemValues    \
+                --record_index      $index          \
+                --storage_array_    $storage_array_ || return 1
+            AssumeValues__AssumePartitionValues     \
+                --record_index      $index          \
+                --storage_array_    $storage_array_ || return 1
             $0 --start_at $index || return 1
         done
     }
 
     while ! assumeTypeSpecificValues; do :; done
 }
-assumeFilesystemValues () {
-    . <(localopts storage_array_:)
-    if [[ ${ACTIVE[type]:-} == filesystem ]]
+AssumeValues__AssumeFilesystemValues () {
+    . <(localopts record_index: storage_array_:)
+    . <(active $record_index)
+    if [[ ${active[type]:-} == filesystem ]]
     then
 
         typeset field amatch
@@ -1027,18 +1004,18 @@ assumeFilesystemValues () {
         # missing mountpoint, fstype, from parent or ancestor
         for field in mountpoint fstype
         do
-            if [[ -z ${ACTIVE[$field]:-} ]]
+            if [[ -z ${active[$field]:-} ]]
             then
-                if [[ -n ${PARENT[$field]:-} ]] && false
+                if [[ -n ${active[parent,$field]:-} ]] && false
                 then
-                    setActive $field ${PARENT[$field]}
+                    setActive $field ${active[parent,$field]}
 
                     noteByIndex \
                         --array $storage_array_ \
-                        --index $ACTIVE[index] \
-                        --note "Moved $field field from ${PARENT[type]} parent"
+                        --index $active[index] \
+                        --note "Moved $field field from ${active[parent,type]} parent"
 
-                    unset "${storage_array_}[$PARENT[index],$field]"
+                    unset "${storage_array_}[$active[parent,index],$field]"
                     return 1
                 elif [[ -n ${amatch::=$(ancestorGetMatch $field)} ]]
                 then
@@ -1047,7 +1024,7 @@ assumeFilesystemValues () {
 
                     noteByIndex \
                         --array $storage_array_ \
-                        --index $ACTIVE[index] \
+                        --index $active[index] \
                         --note "Moved $field field from $atype ancestor"
 
                     unset "${storage_array_}[$amatch]"
@@ -1057,35 +1034,36 @@ assumeFilesystemValues () {
         done
 
         # missing fstype, infer from child
-        if [[ -z ${ACTIVE[fstype]:-} \
-           && ${(P)${:-${storage_array_}[${ACTIVE[index]},1,type]}:-} \
+        if [[ -z ${active[fstype]:-} \
+           && ${(P)${:-${storage_array_}[${active[index]},1,type]}:-} \
            == subvolume ]]
         then
-            eval $storage_array_'[$ACTIVE[index],fstype]=btrfs'
+            eval $storage_array_'[$active[index],fstype]=btrfs'
             setActive fstype btrfs
             noteByIndex \
                 --array $storage_array_ \
-                --index $ACTIVE[index] \
+                --index $active[index] \
                 --note "Set fstype to btrfs due to subvolume child"
             return 1
         fi
 
         # missing fstype, set default value
-        if [[ -z ${ACTIVE[fstype]:-} ]]
+        if [[ -z ${active[fstype]:-} ]]
         then
             setActive fstype ext4
             noteByIndex \
                 --array $storage_array_ \
-                --index $ACTIVE[index] \
+                --index $active[index] \
                 --note "Set fstype to ext4 as default value for missing fstype field"
             return 1
         fi
     fi
     
 }
-assumePartitionValues () {
-    . <(localopts storage_array_:)
-    if [[ ${ACTIVE[type]:-} == partition ]]
+AssumeValues__AssumePartitionValues () {
+    . <(localopts record_index: storage_array_:)
+    . <(active $record_index)
+    if [[ ${active[type]:-} == partition ]]
     then
         # missing size and is NOT noclobber
         if ( ! activeIsSet size ) && ( ! activeIsNoclobber )
@@ -1096,11 +1074,11 @@ assumePartitionValues () {
 
             # check for swap descendant for use below
             typeset -A types
-            : ${(AA)sizes::=${(Pkv)${:-${storage_array_}[(I)${ACTIVE[index]},[0-9]##,type]}}}
+            : ${(AA)sizes::=${(Pkv)${:-${storage_array_}[(I)${active[index]},[0-9]##,type]}}}
             typeset swap_descendant=${(k)sizes[(r)swap]%,type}
 
             # try to get first available size from any descendant
-            dsizekey=${(Pk)${:-${storage_array_}[(i)${ACTIVE[index]},*,size]}:-}
+            dsizekey=${(Pk)${:-${storage_array_}[(i)${active[index]},*,size]}:-}
             dsize=${(Pv)${:-${storage_array_}[$dsizekey]}:-}
             dtype=${(Pv)${:-${storage_array_}[${dsizekey%%size}type]}:-}
             if [[ -n ${dsize:-} ]]
@@ -1109,7 +1087,7 @@ assumePartitionValues () {
                 unsetActive warn
                 noteByIndex \
                     --array $storage_array_ \
-                    --index $ACTIVE[index] \
+                    --index $active[index] \
                     --note "Claimed size from ${dtype:-} descendant"
                 unset "${storage_array_}[$dsizekey]"
                 return 1
@@ -1122,7 +1100,7 @@ assumePartitionValues () {
                 unsetActive warn
                 noteByIndex \
                     --array $storage_array_ \
-                    --index $ACTIVE[index] \
+                    --index $active[index] \
                     --note "Set missing size to match system ram due to swap
                             descendant"
                 return 1
@@ -1136,7 +1114,7 @@ assumePartitionValues () {
                 unsetActive warn
                 noteByIndex \
                     --array $storage_array_ \
-                    --index $ACTIVE[index] \
+                    --index $active[index] \
                     --note "Set paritition size to be maximum available free
                             space as it is the only partition listed"
                 return 1
@@ -1173,7 +1151,7 @@ assumePartitionValues () {
                     unsetActive warn
                     noteByIndex \
                         --array $storage_array_ \
-                        --index $ACTIVE[index] \
+                        --index $active[index] \
                         --note "Set partition size to use maximum available
                                 space on drive as all other partitions are
                                 either either fixed size or are noclobber"
@@ -1186,7 +1164,7 @@ assumePartitionValues () {
                 # return 0 as we've now done our best to infer
                 # partition values
                 warn "Unable to infer a size value for partition with internal
-                index: $ACTIVE[index]. This may end up being fatal if we can't
+                index: $active[index]. This may end up being fatal if we can't
                 resolve it on subsequent passes."
 
             fi
@@ -4342,9 +4320,6 @@ isSet () {
     # takes parameter name, not value, natch
     eval '(( ${+'${1}'} )) && return 0 || return 1'
 }
-parentIsSet () {
-    isSet "PARENT[$1]"
-}
 descendantOrSelfIsNoclobber () {
     . <(localopts index: field: array:)
     array=${array:-STORAGE}
@@ -4367,47 +4342,29 @@ ancestorOrSelfIsNoclobber () {
     do
         for ncfield in ${=NOCLOBBER[partition]};
         do
-            isSetByIndex --index $index --field $ncfield && return 0
+            eval '(( ${+'$array'[$index,$ncfield]} )) && return 0'
         done
         index=${index%%,#[0-9]#}
     done
     return 1
 }
+# IN USE
 activeIsNoclobber () {
     indexIsNoclobber --index ${active[index]}
 }
+# IN USE
 activeIsSet () {
-fail "$0"
-    isSet "ACTIVE[$1]"
+    isSet "active[$1]"
 }
-setParent () {
-fail "$0"
-    setByIndex --index ${PARENT[index]:-} --field $1 --value "${2:-}"
-}
-unsetParent () {
-fail "$0"
-    unsetByIndex --index ${PARENT[index]:-} --field $1
-}
+# IN USE
 setActive () {
-fail "$0"
-    setByIndex --index ${ACTIVE[index]:-} --field $1 --value "${2:-}"
+    setByIndex --index ${active[index]:-} --field $1 --value "${2:-}"
 }
+# IN USE
 unsetActive () {
-fail "$0"
-    unsetByIndex --index ${ACTIVE[index]:-} --field $1
+    unsetByIndex --index ${active[index]:-} --field $1
 }
-isSetByIndex () {
-    # return true if value is set, even if non null
-    # takes parameter name, not value, natch
-    . <(localopts index: field: array:)
-    array=${array:-STORAGE}
-    [[ -n ${index:-} && -n ${field:-} ]] || \
-        fail "bad call to $0 with missing
-            ${index:-index}
-            ${field:-field}
-            "
-    eval '(( ${+'$array'[$index,$field]} )) && return 0 || return 1'
-}
+# IN USE
 setByIndex () {
     . <(localopts index: field: array: value:)
     array=${array:-STORAGE}
@@ -4418,6 +4375,7 @@ setByIndex () {
             "
     eval $array'[$index,$field]="${value:-}"'
 }
+# IN USE
 unsetByIndex () {
     . <(localopts index: field: array: value:)
     array=${array:-STORAGE}
@@ -4426,7 +4384,13 @@ unsetByIndex () {
     value=${value:-${2:-}}
     unset "${array}[$index,$field]"
 }
-descendantIsSet () {
+TODELETE_setParent () {
+    setByIndex --index ${active[parent,index]:-} --field $1 --value "${2:-}"
+}
+TODELETE_unsetParent () {
+    unsetByIndex --index ${active[parent,index]:-} --field $1
+}
+TODELETE_descendantIsSet () {
     # return true if value is set, even if non null
     # for any descendant record
     #
@@ -4439,7 +4403,7 @@ descendantIsSet () {
     [[ -n ${(P)${:-${array}[(I)$index,*,$field]}} ]]
 }
 
-descendantGetMatch () {
+TODELETE_descendantGetMatch () {
     # get first available value for given field, index
     # --key option returns key instead of value
     # from descendants
@@ -4455,7 +4419,7 @@ descendantGetMatch () {
     }
 }
 
-getPartitionAncestor () {
+TODELETE_getPartitionAncestor () {
     . <(localopts index: field: array:)
     array=${array:-STORAGE}
     index=${index:-${ACTIVE[index]:-}}
@@ -4477,7 +4441,7 @@ getPartitionAncestor () {
     done
 }
 
-ancestorIsSet () {
+TODELETE_ancestorIsSet () {
     # return true if value is set, even if non null
     # for any ancestor record
     . <(localopts index: field: array:)
@@ -4493,6 +4457,7 @@ ancestorIsSet () {
     return 1
 }
 
+# IN USE
 ancestorGetMatch () {
     # returns first ancestor index that matches required field
     # returns full index: 1,1,fieldname
@@ -4510,6 +4475,7 @@ ancestorGetMatch () {
     return 1
 }
 
+# IN USE
 getOtherSiblings () {
     # returns the list of siblings of the submitted index
     # exluding the index itself
@@ -4596,7 +4562,7 @@ genPartitions () {
             sgdisk_cmd+=" --new=${active[partnum]}:"
             sgdisk_cmd+="$SYSTEM[$active[devpath],start]}:"
             sgdisk_cmd+="$SYSTEM[$active[devpath],end]} "
-            sgdisk_cmd+="${PARENT[devpath]}"
+            sgdisk_cmd+="${active[parent,devpath]}"
             eval $outputvar'+=("$sgdisk_cmd $sgdisk_msg")'
         fi
 
