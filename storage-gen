@@ -922,28 +922,12 @@ __MAIN () {
             --yes_to_all_       YES         \
             --skip_system_data_ SKIP
 
-    # -----------------------------------------------------------------
-    # confirm existing, infer or query devpath/partnum values
-    # for each noclobber (keep/replace) partition.  if not
-    # ignoring the environment, then confirm valid choices or
-    # preselection in template.
-
-    track __identifyExistingPartitions      \
-        --drives_array          DRIVES      \
+    track __printTree                       \
         --input_array           STORAGE     \
-        --blockenv_array        SYSTEM      \
-        --noquery_env           YES       \
-        --ignore_env            SKIP
-
-    # -----------------------------------------------------------------
-    # confirm existing, infer or query devpath/partnum values
-    # for each new (no keep or replace) partition
-
-    track __enumeratePartitions             \
-        --drives_array          DRIVES      \
-        --input_array           STORAGE     \
-        --blockenv_array        SYSTEM      \
-        --ignore_env            SKIP
+        --tree_option           TREE        \
+        --input_filename        INPUTFILE   \
+        --input_filepath        SOURCEFILE
+    exit
 
     # -----------------------------------------------------------------
     # validate that the results of the partition processing
@@ -2848,6 +2832,7 @@ __reorderPartitions () {
     # reorder rest of partitions so they output in a
     # logical fashion (not necessary other than it
     # makes review of the output much easier)
+    fail $0
     . <(localopts input_array:)
     sortPartitions () {
         . <(localopts on_drive:)
@@ -3410,10 +3395,39 @@ __AssignPartitions () {
             --yes_to_all_       $yes_to_all_        \
             --skip_system_data_ $skip_system_data_  \
             --on_drive          $drive
-        AssignPartitions__EarmarkEnumeratedPartitions
-        AssignPartitions__EnumerateRemainingPartitions
-        AssignPartitions__ReorderPartitionRecords
-        AssignPartitions__CheckForPartitionGaps
+        # enumerated could include both noclobber and new that
+        # already had a partnum assigned
+        typeset -aU earmarked
+        earmarked=()
+        AssignPartitions__EarmarkEnumeratedPartitions\
+            --storage_tree_     $storage_tree_      \
+            --on_drive          $drive              \
+            --earmarked_        earmarked
+        # we earmark all system partitions UP TO the last
+        # so this is equivalent to "find maximum current partnum
+        # and earmark from 1..maximum". We could look into more
+        # complex partition removal, sorting, reassignment later
+        # but that's getting tricky and best left to the user
+        # to arrange manually
+        if [[ -n ${(P)${:-${storage_tree_}[(I)$drive*(keep|replace)]}} ]]
+        then
+            AssignPartitions__EarmarkSystemPartitions   \
+                --system_data_      $system_data_       \
+                --storage_tree_     $storage_tree_      \
+                --on_drive          $drive              \
+                --earmarked_        earmarked
+        fi
+        AssignPartitions__EnumerateRemainingPartitions  \
+            --storage_tree_     $storage_tree_          \
+            --on_drive          $drive                  \
+            --earmarked_        earmarked
+        AssignPartitions__ReorderPartitionRecords       \
+            --storage_tree_     $storage_tree_          \
+            --on_drive          $drive
+        AssignPartitions__CheckForPartitionGaps         \
+            --system_data_      $system_data_           \
+            --storage_tree_     $storage_tree_          \
+            --on_drive          $drive
     done
 }
 AssignPartitions__IdentifyExistingPartitions () {
@@ -3433,20 +3447,43 @@ AssignPartitions__IdentifyExistingPartitions () {
            && ! ${(P)skip_system_data_:-false}
         then
 
-           AssignPartitions_InferPartition \
+            typeset matched_partnum=""
+            if ! AssignPartitions_InferPartition \
                 --system_mapping_ $system_mapping_ \
                 --partition $partition \
                 --storage_tree_ $storage_tree_ \
-                --system_data_ $system_data_ || {
-
+                --system_data_ $system_data_ \
+                --return_matched_partnum_ matched_partnum
+            then
                 # inference failed; query instead
                 AssignPartitions_QueryForPartition \
                     --partition $partition \
                     --yes_to_all_ $yes_to_all_ \
                     --storage_tree_ $storage_tree_ \
-                    --system_data_ $system_data_
+                    --system_data_ $system_data_ \
+                    --return_matched_partnum_ matched_partnum
+            fi
 
-                }
+            if [[ -n ${matched_partnum:-} ]]
+            then
+                # only update keep partitions with full system data, otherwise
+                # just update size
+                AssignPartitions_UpdateFromExisting \
+                    --replace ${${replace[keep]+true}:-false} \
+                    --system_mapping_ $system_mapping_ \
+                    --partition $partition \
+                    --drive $active[drive,devpath] \
+                    --matched_partnum $matched_partnum \
+                    --storage_tree_ $storage_tree_ \
+                    --system_data_ $system_data_
+            else
+                fail "Unable to identify an existing system partition for
+                template partitition tagged with
+                --${active[keep]+keep}${active[replace]+replace}. Either
+                supply more data (existing partnum, matching code, label,
+                size, etc.) or check the existing system to confirm you
+                have entered data that indeed matches the system configuration."
+            fi
         fi
     done
 }
@@ -3455,68 +3492,40 @@ AssignPartitions_InferPartition () {
             system_mapping_:    \
             storage_tree_:      \
             system_data_:       \
-            partition:          )
+            partition:          \
+            return_matched_partnum_:  )
         . <(active $partition)
         [[ $active[type] == partition ]] || { 
             fail "$0 index received not of type partition" }
-        typeset success=false
         typeset -a fields
         fields=(${(P)=${:-${system_mapping_}[priority]}})
         typeset field
         for field in $fields
         do
-            typeset matched=""
             if [[ -n ${active[$field]:-} ]]
             then
-                AssignPartitions_MatchExisting \
-                    --drive $active[drive,devpath] \
-                    --partition $partition \
-                    --system_data_ $system_data_ \
-                    --field $field \
-                    --value $active[$field] \
-                    --matched_partnum_ matched && { success=true; break } || :
+                # match existing
+                typeset -A candidates; candidates=()
+                typeset -a previously_matched; previously_matched=()
+                typeset -a matched; matched=()
+                typeset value=$active[$field]
+                typeset drive=$active[drive,devpath]
+                candidates=(${(PkvL)${:-${system_data_}[(I)$drive*$field]}})
+                previously_matched=(${${(Pk)${:-${system_data_}[(I)$drive*,matched]}#$drive}%%,*})
+                matched=(${${(k)candidates[(R)${(L)value}]#$drive}%%,*})
+                matched=(${(M)matched:|previously_matched})
+                (( ${#matched} == 1 )) && {
+                eval ${system_data_}'[$drive$matched,matched]="matched $partition by $field";'
+                eval $return_matched_partnum_'=$matched'
+                reportInferred "matched partition tagged with
+                --${active[keep]+keep}${active[replace]+replace} to
+                $active[drive,devpath]$matched by $field value ($active[$field])"
+                return 0
+                } || :
             fi
         done
-        if $success
-        then
-            reportInferred "matched partition tagged with
-            --${active[keep]+keep}${active[replace]+replace} to
-            $active[drive,devpath]$matched by $field value ($active[$field])"
-            # only update keep partitions with full system data, otherwise
-            # just update size
-            AssignPartitions_UpdateFromExisting \
-                --replace ${${replace[keep]+true}:-false} \
-                --system_mapping_ $system_mapping_ \
-                --partition $partition \
-                --drive $active[drive,devpath] \
-                --matched_partnum $matched \
-                --storage_tree_ $storage_tree_ \
-                --system_data_ $system_data_
-        fi
-}
-AssignPartitions_MatchExisting () {
-    . <(localopts \
-            system_data_:    \
-            field:           \
-            value:           \
-            drive:           \
-            partition:       \
-            matched_partnum_:  )
-    # note that code is either longcode or shortcode in system data
-    # note that label is either label or partlabel in system data
-    # thus we use no leading comma in the index search prior to $field
-    # finally, note that this is a case insensitive match
-    typeset -A _candidates
-    typeset -a _previously_matched
-    typeset -a _matched
-    _candidates=(${(PkvL)${:-${system_data_}[(I)$drive*$field]}})
-    _previously_matched=(${${(Pk)${:-${system_data_}[(I)$drive*,matched]}#$drive}%%,*})
-    _matched=(${${(k)_candidates[(R)${(L)value}]#$drive}%%,*})
-    _matched=(${(M)_matched:|_previously_matched})
-    (( ${#_matched} == 1 )) && {
-    eval ${system_data_}'[$drive$_matched,matched]="matched $partition by $field";'
-    eval $matched_partnum_'=$_matched'
-    return 0; } || return 1
+        # got here without matching
+        return 1
 }
 AssignPartitions_UpdateFromExisting () {
     . <(localopts \
@@ -3541,395 +3550,61 @@ AssignPartitions_UpdateFromExisting () {
     do
         # if we have a system value and we haven't written to the mapped
         # equivalent already then write to it regardless of existing values
-        typeset v=""
+        typeset v="" f=""
         if [[ -n ${v::=${(P)${:-${system_data_}[$drive$matched_partnum,$field]}:-}} ]] \
-           && [[ -z ${(M)updated:#${(P)${:-${system_mapping_}[$field]}}} ]]
+           && [[ -z ${(M)updated:#${f::=${(P)${:-${system_mapping_}[$field]}}}} ]]
         then
-            eval $storage_tree_'[$partition,partnum]=$v'
-            updated+=(${(P)${:-${system_mapping_}[$field]}})
+            eval $storage_tree_'[$partition,$f]=$v'
+            updated+=($f)
         fi
     done
     # update partnum as well
     eval $storage_tree_'[$partition,partnum]=$matched_partnum'
 }
-AssignPartitions_QueryForPartition () {
-    :
-}
-AssignPartitions__EarmarkEnumeratedNewPartitions () {
-    . <(localopts storage_tree_: on_drive:)
-}
-AssignPartitions__EnumerateRemainingNewPartitions () {
-    . <(localopts storage_tree_: on_drive:)
-}
-AssignPartitions__ReorderPartitionRecords () {
-    . <(localopts storage_tree_: on_drive:)
-}
-AssignPartitions__CheckForPartitionGaps () {
-    . <(localopts storage_tree_: on_drive:)
-}
-
-__identifyExistingPartitions () {
-    # each noclobber partition either has an explicit devpath, an explicit partnum
-    # or some information that should allow us to deduce which partition it is.
-    # if the devpath and partnum are missing and if the deduction fails, then we
-    # can ask the user to identify the noclobber partitions). If there aren't enough
-    # existing partitions left to select from at any point, we fail.
-
-    . <(localopts blockenv_array: input_array: ignore_env: debug_opt: noquery_env:)
-
-    if ${(P)ignore_env:-false}
+AssignPartitions_QueryForPartition () { 
+    . <(localopts \
+            partition:      \
+            yes_to_all_:    \
+            storage_tree_:  \
+            system_data_:   \
+            return_matched_partnum_:  )
+    . <(active $partition)
+    typeset -A candidates
+    typeset -a all_partitions
+    typeset -a previously_matched
+    typeset -a available_partitions
+    typeset -a matched; matched=()
+    typeset drive=$active[drive,devpath]
+    candidates=(${(PkvL)${:-${system_data_}[(I)$drive*type]}})
+    all_partitions=(${(ko)candidates[(R)part]%,type})
+    previously_matched=(${(Pk)${:-${system_data_}[(I)$drive*,matched]}%,matched})
+    available_partitions=(${(M)all_partitions:|previously_matched})
+    if [[ -n ${available_partitions} ]]
     then
-        alert "\nIGNORING ENVIRONMENT, SKIPPING MATCHES\n:
-        Skipping matching of existing partitions on system to
-        --noclobber partitions listed in the storage definition file due to
-        the --just command line option (ignoring the actual system environment)."
-        return 0
-    fi
-
-    # convenience associative arrays
-    : ${(AA)all_types::=${(Pkv)${:-${blockenv_array}[(I)*type]}}}
-    : ${(A)all_parts::=${(k)all_types[(R)part]%,type}}
-
-    # helper functions
-    matchTypeValue () {
-        . <(localopts array_value_name: active_value: result: nummatches: matchedval:)
-        typeset -A filtered; typeset -a matched
-        #: ${(AA)filtered::=${(PkvL)${:-${blockenv_array}[(I)(${(~j:|:)all_parts}),$array_value_name]}}}
-        : ${(AA)filtered::=${(Pkv)${:-${blockenv_array}[(I)(${(~j:|:)all_parts}),$array_value_name]}}}
-        matched=(${(k)filtered[(R)(#i)${active_value}]%,$array_value_name})
-        (( ${(P)nummatches::=${#matched}} == 1 )) && {
-            eval $result'="${(L)matched}"'
-            typeset mv="${(P)${:-${blockenv_array}[$matched,$array_value_name]}}"
-            [[ -n ${matchedval:-} ]] && {
-                eval $matchedval'="$mv"'
-            }
-            return 0
-        } || return 1
-    }
-    isExistingPartition () {
-        typeset matched; [[ -n ${(L)all_parts[(R)${(L)1:-}]:-} ]]
-    }
-    queryUsePartitionMatchedWith () {
-        . <(localopts match_part: match_with_field:)
-
-        # only using id for failure report
-        typeset id=$ACTIVE[index] field msg=""
-        for field in ${=NOCLOBBER[partition]};
-        do
-            activeIsSet $field && { msg="$field"; break }
-        done
-
-        [[ -n $msg ]] || { debugDump; fail "$0 should have found a noclobber
-        field (one of ${:-'${^=NOCLOBBER[partition]}'}) in partition
-        $id." }
-
-        report "\nPartition ${record##*,} under drive $drivepath is designated an
-        existing partition by the --$msg field. An existing partition with a
-        matching $match_with_field value (${ACTIVE[$match_with_field]}) has been found:"
-
-        print -n "\nMATCH: $match_part " 1>&2
-
-        typeset f v
-        print -n "/ "${(Pv)^${:-${blockenv_array}[(I)$match_part,(label|partlabel|size|code)]}} 1>&2
-        print
-        report "If you don't want to see this query and want to ensure this
-        partition entry in the template uses this (or another) specific existing
-        partition, add a --partnum or --devpath entry to this item in your storage
-        template. For example, for this partition:
-        '--partnum ${(M)match_part%%[0-9]#}' (--partnum will take the rest of the
-        path from its parent drive), or '--devpath ${match_part}'"
-        print -n "\nUse this partition? (y/n)"
-        read -qs
-    }
-    reportFailedMatchFromField () {
-        typeset msg
-        msg="Can't match template noclobber partition to existing system
-        partition based on $1. "
-        (( $matches > 1 )) \
-        && msg+="There is more than one matching partition" \
-        || msg+="There are no matching partitions"
-        msg+=" with the $1 value '$2'. Trying other match methods if
-               available."
-        report $msg
-    }
-    setActiveDevpathToMatched () {
-        . <(localopts note: newdevpath:)
-        noteByIndex \
-            --array $input_array \
-            --index $ACTIVE[index] \
-            --note "Matching existing partition based on $note"
-        setActive devpath $newdevpath
-        setActive partnum ${(M)newdevpath%%[0-9]#}
-    }
-    setActiveToEnvValueIfSet () {
-        . <(localopts devpath: activefield: envfield:)
-        typeset envval
-        if [[ -n ${envval::=${(P)${:-${blockenv_array}[$devpath,$envfield]}:-}} ]]
-        then
-            setActive $activefield $envval
-        else
-            return 0
-        fi
-    }
-
-    processPartitions () {
-
-        . <(localopts start_at:)
-
-        typeset record
-        for record in $(getChildren ${start_at:-})
-        do
-
-            makeActive $record
-
-            # grab drive path while we pass by on our way to the partitions
-            [[ ${ACTIVE[type]} == drive ]] && drivepath=${ACTIVE[devpath]}
-
-            # skip unless this is a noclobber partition
-            if [[ ${ACTIVE[type]} == partition ]] && activeIsNoclobber
-            then
-
-                # use this to confirm match later in the code/label/size fallbacks
-                typeset matchfound=false
-
-                # use in tests
-                typeset matchpart matches
-
-                # first, though, do we have an existing devpath
-                if [[ -n ${ACTIVE[devpath]:-} ]]
-                then
-
-                    # if not valid, fail
-                    isExistingPartition ${ACTIVE[devpath]:-} || {
-                        fail "Warning: --devpath value of the --noclobber
-                            partition ($devpath) is not among the existing
-                            partitions on this system."
-                        }
-                    setActive partnum ${(M)ACTIVE[devpath]%%[0-9]#}
-
-                # if no existing devpath, do we have an existing partnum
-                elif [[ -n ${ACTIVE[partnum]:-} ]]
-                then
-
-                    # if not valid, fail
-                    isExistingPartition ${ACTIVE[devpath]:-} || {
-                        fail "Warning: --partnum value of the --noclobber
-                            partition ($devpath) is not among the existing
-                            partitions on this system."
-                        }
-                    setActive devpath $drivepath${ACTIVE[partnum]:-}
-
-                # neither devpath, nor partnum, can we infer from other values?
-                else
-
-                    # try code first
-                    if [[ -n ${ACTIVE[code]:-} ]]
-                    then
-                        typeset codetype
-                        (( ${#ACTIVE[code]} > 4 )) \
-                            && codetype=longcode || codetype=shortcode
-                        # if we get a single match
-                        if matchTypeValue \
-                            --array_value_name $codetype \
-                            --active_value ${ACTIVE[code]} \
-                            --nummatches matches \
-                            --result matchpart
-                        then
-                            if ${(P)noquery_env:-false} \
-                                || queryUsePartitionMatchedWith \
-                                   --match_part $matchpart \
-                                   --match_with_field code
-                            then
-                                setActiveDevpathToMatched \
-                                    --note "${codetype%code} form GUID type
-                                            code ${ACTIVE[code]}" \
-                                    --newdevpath $matchpart
-                                # code was matched, so pull in any
-                                # existing label, regardless
-                                setActiveToEnvValueIfSet \
-                                    --devpath $matchpart \
-                                    --activefield label \
-                                    --envfield label
-                                # prefer partlabel, so override
-                                # label with it if present
-                                setActiveToEnvValueIfSet \
-                                    --devpath $matchpart \
-                                    --activefield label \
-                                    --envfield partlabel
-                                continue
-                            else
-                            fi
-                        else
-                            reportFailedMatchFromField \
-                                "${codetype%code} form GUID type code" \
-                                "${ACTIVE[code]}"
-                        fi
-                    fi
-
-                    # try matching label, partlabel, and size
-                    for envfield in partlabel label size
-                    do
-                        if [[ -n ${ACTIVE[${envfield#part}]:-} ]]
-                        then
-                            if matchTypeValue \
-                                --array_value_name $envfield \
-                                --active_value ${ACTIVE[${envfield#part}]} \
-                                --nummatches matches \
-                                --result matchpart \
-                                --matchedval matched_value
-                            then
-                                if ${(P)noquery_env:-false} \
-                                    || queryUsePartitionMatchedWith \
-                                       --match_part $matchpart \
-                                       --match_with_field $envfield
-                                then
-                                    setActiveDevpathToMatched \
-                                        --note "$field match
-                                                ${ACTIVE[${envfield#part}]}" \
-                                        --newdevpath $matchpart
-                                    # since the actual partition label may
-                                    # have different case formatting, reset it
-                                    if [[ $envfield != size ]]
-                                    then
-                                        setActive ${envfield#part} "$matched_value"
-                                    else
-                                        # if size was matched, pull in any
-                                        # existing label, regardless
-                                        setActiveToEnvValueIfSet \
-                                            --devpath $matchpart \
-                                            --activefield label \
-                                            --envfield label
-                                        # prefer partlabel, so override
-                                        # label with it if present
-                                        setActiveToEnvValueIfSet \
-                                            --devpath $matchpart \
-                                            --activefield label \
-                                            --envfield partlabel
-                                    fi
-                                    continue 2
-                                else
-                                    continue
-                                fi
-                            else
-                                reportFailedMatchFromField \
-                                    "$envfield" "${ACTIVE[${envfield#part}]}"
-                            fi
-                        fi
-                    done
-
-                    # final check and fail (we shouldn't be here unless we
-                    # failed to match, so could just fail straight away but
-                    # this is here to check that we're not missing a good result
-                    # in the logic above
-                    makeActive $record
-                    if [[ -z ${ACTIVE[devpath]:-} || -z ${ACTIVE[partnum]:-} ]]
-                    then
-                        typeset msg="Storage template partition entry
-                        ${record##*,} in drive ${record%%,*} set to
-                        ${(k)ACTIVE[(I)(${(~j:|:)${=${NOCLOBBER[partition]}}})]:-}
-                        cannot be automatically matched to any existing partition."
-                        if ${(P)noquery_env:-false}
-                        then
-                            fail "$msg Either set a valid --devpath or
-                            --partnum, or a unique matching --label, --size,
-                            or --code value. You may also run without the
-                            --$noquery_env option and will then be prompted
-                            to select an existing partition to match to."
-                        else
-                            warn $msg
-                            typeset pickpart
-                            selectPartitionUnderDrive           \
-                                --drivepath         $drivepath  \
-                                --drives_array      DRIVES      \
-                                --input_array       STORAGE     \
-                                --blockenv_array    SYSTEM    \
-                                --noquery_env       YES       \
-                                --ignore_env        SKIP     \
-                                --result_var        pickpart
-                            if [[ -n ${pickpart:-} ]]
-                            then
-                                setActive devpath $pickpart
-                                setActive partnum ${(M)pickpart%%[0-9]#}
-                                # if size was matched, pull in any
-                                # existing label, regardless
-                                setActiveToEnvValueIfSet \
-                                    --devpath $pickpart \
-                                    --activefield label \
-                                    --envfield label
-                                # prefer partlabel, so override
-                                # label with it if present
-                                setActiveToEnvValueIfSet \
-                                    --devpath $pickpart \
-                                    --activefield label \
-                                    --envfield partlabel
-                                continue 2
-                            else
-                                fail "$0 failed to get a manually
-                                      selected partition"
-                            fi
-                        fi
-                    else
-                        fail "Both devpath and partnum are set on a noclobber
-                        partition, but we thought they weren't! Unexpected error
-                        in noclobber match code."
-                    fi
-
-                fi
-            fi
-
-            $0 --start_at $record
-        done
-
-    }
-
-    processPartitions
-
-}
-selectPartitionUnderDrive () {
-    typeset -a _SELECTEDPARTS
-
-    . <(localopts drivepath: blockenv_array: input_array: ignore_env: debug_opt: noquery_env: result_var:)
-
-    typeset -A env_staging
-    env_staging=("${(@Pkv)blockenv_array}")
-    
-    typeset -A types_actual
-    : ${(AA)drive_types_all::=${(kv)env_staging[(I)${drivepath}[0-9]*type]}}
-
-    # list of available drives on system
-    typeset -a partitions_all
-    partitions_all=(${(k)drive_types_all[(R)part]%,type})
-    partitions_unselected=(${(n)partitions_all:|_SELECTEDPARTS})
-
-    # query user for partition selection
-    if [[ -n ${partitions_unselected} ]]
-    then
-
         typeset eraser
         eraser="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
-
-        msg="Partition selection"
-        display "\n$msg\n${msg//?/-}"
+        typeset msg="Partition device selection:"
+        display "$msg\n${msg//?/-}"
+        display "template entry details:\n${(@q-)"${(@kv)active[(I)([^,]##)~(notes|type|index)]}"}"
         display "Select from list of available partitions:"
         print 1>&2 
-        typeset ap
+        typeset -i ap=0
         typeset apart
-        for apart in $partitions_unselected
+        typeset -a selectable; selectable=()
+        for apart in $available_partitions
         do
-            print -n "${ap::=${(M)apart%%[0-9]#}}: $apart - " 1>&2
-            print -n "SIZE: ${env_staging[$apart,size]:-} " 1>&2
-            print -n "${env_staging[$apart,shortcode]:+ CODE: }${(q-)env_staging[$apart,shortcode]:-}" 1>&2
-            [[ -z ${env_staging[$apart,shortcode]:-} ]] && {
-                print -n "${env_staging[$apart,longcode]:+ CODE: }${(q-)env_staging[$apart,longcode]:-}" 1>&2
-            }
-            print -n "${env_staging[$apart,partlabel]:+ PARTLABEL: }${(q-)env_staging[$apart,partlabel]:-}" 1>&2
-            print -n "${env_staging[$apart,mountpoint]:+ MOUNTPOINT: }${env_staging[$apart,mountpoint]:-}" 1>&2
-            print 1>&2
+            print -n "${ap::=${(M)apart%%[0-9]#}} $apart (" 1>&2
+            print -n "SIZE:${(P)${:-${system_data_}[$apart,size]}:-} " 1>&2
+            print -n "CODE:${(P)${:-${system_data_}[$apart,shortcode]}:-}" 1>&2
+            print -n "${(P)${:-${system_data_}[$apart,partlabel]}:+ PARTLABEL:}" 1>&2
+            print -n "${(Pq-)${:-${system_data_}[$apart,partlabel]}:-}" 1>&2
+            print -n "${(P)${:-${system_data_}[$apart,label]}:+ LABEL}" 1>&2
+            print -n "${(Pq-)${:-${system_data_}[$apart,label]}:-}" 1>&2
+            print ")" 1>&2
+            selectable+=($ap)
         done
         print "\nq: Quit\n" 1>&2
-
         typeset confirm=""
-
         while [[ -z ${(M)${confirm:-n}:#y} ]]; do
             print -n "${${msg:-}//?/\b}$eraser" 1>&2
             msg="Enter selection number (1"
@@ -3937,107 +3612,141 @@ selectPartitionUnderDrive () {
             print -n "$msg" 1>&2
             typeset r="0"
             # accept digits 1-$i if $ap<10 (eg 1-3), otherwise digits 0-9
-            while [[ -z ${(M)${r}:#[q$((ap>9?0:1))-$((ap>9?9:$ap))]#} ]]; do
+            while [[ -z ${(M)${r}:#[q$((ap>9?0:1))-$((ap>9?9:$ap))]#} ]]
+            do
                 read -ks r
             done
-            [[ ${(L)r} == q ]] && {
-                print "${${msg:-}//?/\b}${eraser}User selected quit.\n" 1>&2; exit;}
-            print -n "${${msg:-}//?/\b}$eraser${msg::=${partitions_unselected[$r]} - correct? (y/n) }" 1>&2
+            if [[ ${(L)r} == q ]]
+            then
+                print "${${msg:-}//?/\b}${eraser}User selected quit.\n" 1>&2
+                exit
+            fi
+            [[ -n ${(M)selectable:#$r} ]] || { print -n "\b" 1>&2; continue }
+            print -n "${${msg:-}//?/\b}" 1>&2
+            print -n "$eraser" 1>&2
+            print -n "${msg::=$drive$r - correct? (y/n) }" 1>&2
             read -qs confirm && print 1>&2 || print -n "\b" 1>&2
         done
-
-        selected=${partitions_unselected[$r]}
-        report "Manually selected partition: $selected"
-        partitions_unselected=("${(@)partitions_unselected:#$selected}")
-        _SELECTEDPARTS+=($selected)
-        eval $result_var'=$selected'
-
+        report "Manually selected partition $drive$r"
+        eval $return_matched_partnum_'=$r'
+        return 0
+    else
+        fail "No unavailable (unmounted, not previously selected) partitions
+        are available on drive $drive of this system. If you wish to use an
+        existing mounted drive or partition you can unmount it and run again
+        or run this script again with the --skip option to skip checking the
+        current system state. If you use --skip, you must assign drives either
+        within the storage template file using --devpath or with the --drives
+        command line option."
+    fi
+    # shouldn't get here!
+    fail "Unknown condition in $0"
+}
+AssignPartitions__EarmarkEnumeratedPartitions () {
+    . <(localopts storage_tree_: on_drive: earmarked_:)
+    typeset partition
+    for partition in $(children --of $on_drive)
+    do
+        . <(active $partition)
+        if [[ $active[type] == partition ]] \
+           && [[ -n ${active[partnum]:-} ]]
+        then
+            eval $earmarked_'+=($active[partnum])'
+        fi
+    done
+}
+AssignPartitions__EarmarkSystemPartitions () {
+    . <(localopts storage_tree_: system_data_: on_drive: earmarked_:)
+    typeset -A candidates
+    typeset drivepath=${(P)${:-${storage_tree_}[$on_drive,devpath]}}
+    candidates=(${(PkvL)${:-${system_data_}[(I)$drivepath*type]}})
+    eval $earmarked_'+=(${${(ko)candidates[(R)part]%,type}#$drivepath})'
+}
+AssignPartitions__EnumerateRemainingPartitions () {
+    . <(localopts storage_tree_: on_drive: earmarked_:)
+    typeset -i seq=${${(@PO)${:-${earmarked_}}}[1]}
+    typeset partition
+    # non max value
+    for partition in $(children --of $on_drive)
+    do
+        . <(active $partition)
+        if [[ $active[type] == partition ]] \
+           && [[ -z ${active[partnum]:-} ]] \
+           && [[ ${active[size]:-} != max ]]
+        then
+            eval $storage_tree_'[$partition,partnum]=$((++seq))'
+        fi
+    done
+    # max value
+    typeset max=0
+    for partition in $(children --of $on_drive)
+    do
+        . <(active $partition)
+        if [[ $active[type] == partition ]] \
+           && [[ -z ${active[partnum]:-} ]] \
+           && [[ ${active[size]:-} == max ]]
+        then
+            eval $storage_tree_'[$partition,partnum]=$((++seq))'
+            max+=1
+        elif [[ $active[type] == partition ]] \
+           && [[ -z ${active[partnum]:-} ]]
+        then
+            fail "Unexpected condition: max/non-max enumeration complete but
+            there is a remaining non-max (fixed size) partition with no
+            partition number!"
+        fi
+    done
+    if (( max > 1 ))
+    then
+        fail "Unexpected condition: Multiple max size partitions found!"
     fi
 }
-__enumeratePartitions () {
-    . <(localopts blockenv_array: input_array: ignore_env:)
+AssignPartitions__ReorderPartitionRecords () {
+    . <(localopts storage_tree_: on_drive:)
 
-    processPartitions () {
-
-        . <(localopts start_at: partnum: max lastpartval:)
-
-        typeset -i p=$partnum
-
-        typeset record
-        for record in $(getChildren ${start_at:-})
+    sortPartitions () {
+        . <(localopts on_drive:)
+        typeset -A partnums
+        # get all entries with partnums (thus all numbered partitions)
+        partnums=(${(kv)STORAGE[(I)$on_drive,[0-9]##,partnum]})
+        # move partitions to temp record namespace
+        for partition in ${(k)partnums%,partnum}
         do
-            makeActive $record
-
-            if ${max:-false}
-            then
-                sizeTest () { [[ ${ACTIVE[size]:-} == max ]] }
-            else
-                sizeTest () { [[ ${ACTIVE[size]:-} != max ]] }
-            fi
-
-            # need to check if there is an existing device path or partnum
-            # skipping noclobber partitions, since we've just deal with them
-            if [[ ${ACTIVE[type]} == partition ]] \
-               && sizeTest && ! activeIsNoclobber
-            then
-                setActive devpath $drivepath$((++p))
-                setActive partnum $p
-            fi
-            
-            [[ -n ${lastpartval:-} ]] && {
-            (( ${p:-0} > ${(P)lastpart:-0} )) && eval $lastpartval'=$p' }
-
-            $0 --start_at $record --partnum $p ${lastpartval:+--lastpartval }${lastpartval:-}
+            eval ${(k)STORAGE[(I)$partition,*]//(#m)*/STORAGE[TEMP,$MATCH]=${(q-)STORAGE[$MATCH]}; unset \"STORAGE[$MATCH]\"; }
         done
-
+        # move partitions back to actual namespace in new order
+        for partition in ${(k)partnums%,partnum}
+        do
+            # get new index of this partition's partnum from sorted list
+            typeset newindex=${partition%%[0-9]#}${${(@nv)partnums}[(i)$partnums[$partition,partnum]]}
+            eval ${(k)STORAGE[(I)TEMP,$partition,*]//(#b)(TEMP,)($partition)(,*)/STORAGE[$newindex$match[3]]=${(q-)STORAGE[TEMP,${match[2]}${match[3]}]}; }
+        done
+        # remove the temp values
+        eval ${(k)STORAGE[(I)TEMP,*]//(#m)*/unset \"STORAGE[$MATCH]\"; }
     }
-
-    typeset drive
-    for drive in $(getChildren)
+    typeset drive; typeset -a drives; drives=($(getChildren))
+    for drive in $drives; do sortPartitions --on_drive $drive; done
+}
+AssignPartitions__CheckForPartitionGaps () {
+    . <(localopts system_data_: storage_tree_: on_drive:)
+    typeset -A candidates
+    typeset -a system_partitions
+    typeset -a storage_partitions
+    typeset -aU combined_partitions
+    typeset drivepath=${(P)${:-${storage_tree_}[$on_drive,devpath]}}
+    candidates=(${(PkvL)${:-${system_data_}[(I)$drivepath*type]}})
+    system_partitions=(${${(ko)candidates[(R)part]%,type}#$drivepath})
+    storage_partitions=(${(Pv)${:-${storage_tree_}[(I)$on_drive*partnum]}})
+    combined_partitions=($system_partitions $storage_partitions)
+    typeset max_part=${${(On)combined_partitions}[1]}
+    typeset -i _i
+    for _i in {1..$max_part}
     do
-        makeActive $drive
-        drivepath=${ACTIVE[devpath]}
-
-        if ${(P)ignore_env:-false}
-        then
-            maxpart=0
-        else
-            maxpart=${${(Onu)${(Pk)${:-${blockenv_array}[(I)$drivepath*]}}//(#b)(#s)$drivepath([0-9]#),*/$match}[1]:-}
-        fi
-
-        # now scan all existing partitions and see if there is an existing partnum
-
-        # if noclobber drive, use current max partition number as starting point
-        typeset -i partnum
-        if descendantOrSelfIsNoclobber --index $drive
-        then
-            partnum=$maxpart
-            if (( $maxpart > 0 ))
-            then
-                if activeIsNoclobber --index $drive
-                then
-                    msg=""
-                else
-                    msg=" (inherited from a descendant element with one of the
-                    'noclobber' fields: ${:---${(v)^=NOCLOBBER}})"
-                fi
-                alert "Drive #$drive ($drivepath) is set to noclobber state$msg.
-                New partitions will be added starting AFTER partition number
-                $partnum. This may result in partition gaps if you have
-                other missing partitions with a value less than that. Check
-                partitions with sgdisk and/or lsblk. sgdisk's --sort option
-                can be used to address gaps. Read the sgdisk manpage first."
-                alert "Note that the partitions with any
-                ${:---${(v)^=NOCLOBBER[partition]}} fields will be set to
-                EXISTING partition numbers."
-            fi
-        else
-            partnum=0
-        fi
-        # do non max partitions first, max last
-        typeset lastpart
-        processPartitions --start_at ${drive} --partnum $partnum --lastpartval lastpart
-        processPartitions --start_at ${drive} --partnum $lastpart --max
+        [[ -n ${(M)combined_partitions:#$_i} ]] || {
+        warn "Drive $drivepath has a partition gap at partition index $_i.
+              Consider whether you can resort partitions to address this
+              (see 'man sgdisk' for more information)."
+    }
     done
 }
 __identifyOtherDevicePaths () {
@@ -4183,9 +3892,12 @@ __printTree () {
         typeset -a children;
         children=($(getChildren ${start_at:-}))
 
+        typeset add line1 line2 line firstline
+        typeset -a wrapped
+
         for record in $children; do
 
-            makeActive $record
+            . <(active $record)
 
             # if this isn't last child, use a T, otherwise an L
             # and similarly add/don't add a continuation line
@@ -4197,15 +3909,15 @@ __printTree () {
                 line1="$ii${leader:+$x}${leader:-}${leader:+$l}"
                 add=$s$x
             fi
-            if (( ${+ACTIVE[auto]} )); then
-                ACTIVE[type]="[${ACTIVE[type]}]"
+            if (( ${+active[auto]} )); then
+                active[type]="[${active[type]}]"
             fi
-            if (( ${+ACTIVE[keep]} )); then
-                line2="${x}${COLOR[yellow]:-}${ACTIVE[type]}${COLOR[default]:-} "
-            elif (( ${+ACTIVE[replace]} )); then
-                line2="${x}${COLOR[red]:-}${ACTIVE[type]}${COLOR[default]:-} "
+            if (( ${+active[keep]} )); then
+                line2="${x}${COLOR[yellow]:-}${active[type]}${COLOR[default]:-} "
+            elif (( ${+active[replace]} )); then
+                line2="${x}${COLOR[red]:-}${active[type]}${COLOR[default]:-} "
             else
-                line2="${x}${ACTIVE[type]} "
+                line2="${x}${active[type]} "
             fi
 
             # print continuation line if not initial line
@@ -4216,17 +3928,17 @@ __printTree () {
             '${line1}'
             '${line2}'
             '${'
-                '${(k)ACTIVE}' '# all active keys for item'
+                '${(k)active}' '# all active keys for item'
                 '//'
                     '(#b)'
                     '(*)' '# use entirekey value in replacement'
                 '/'
                     '$match' '# print the key value'
-                    '${ACTIVE['
+                    '${active['
                         '${match}' '# an equals sign for visual unity'
                     ']:+=}'        '# but only if it is a non boolean'
-                    '${ACTIVE[${match}]:+' '# only output value if not empty'
-                    '${(q-)ACTIVE[${match}]:-}}' '# so booleans output clean'
+                    '${active[${match}]:+' '# only output value if not empty'
+                    '${(q-)active[${match}]:-}}' '# so booleans output clean'
             '}'
             )
             typeset -a e_colorcoder
@@ -4242,13 +3954,14 @@ __printTree () {
             )
 
             # remove keys we don't want
-            typeset auto=${${ACTIVE[auto]+true}:-false}
-            typeset type=${ACTIVE[type]}
-            unset "ACTIVE[index]"   \
-                  "ACTIVE[auto]"    \
-                  "ACTIVE[inferred]"\
-                  "ACTIVE[notes]"   \
-                  "ACTIVE[type]"
+            typeset auto=${${active[auto]+true}:-false}
+            typeset type=${active[type]}
+            typeset -a remove
+            remove=(index auto inferred notes type ${(k)active[(I)(parent|drive)*]})
+            for key in $remove
+            do
+                unset "active[$key]"
+            done
 
 
             # add all keys
