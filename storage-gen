@@ -4011,19 +4011,21 @@ __genPayload () {
 
     typeset -A section_header
     section_header=(
-    partitions  "# Drive formatting and partition structures"
-    encryption  "# Encryption"
-    filesystem  "# Filesystem creation"
-    subvolume   "# Subvolume creation"
-    swap        "# Swap configuration"
-    logical     "# Logical volume preparation"
-    mount       "# Mount filesystems and subvolumes"
+    partitions  "Drive formatting and partition structures"
+    encryption  "Encryption"
+    filesystem  "Filesystem creation"
+    subvolume   "Subvolume creation"
+    swap        "Swap configuration"
+    logical     "Logical volume preparation"
+    mount       "Mount filesystems and subvolumes"
     )
 
     sectionHeader () {
         if [[ -n ${section_header[$1]:-} ]]
         then
-            eval $outputvar'+=("\n\n$section_header[$1]\n$__")'
+            typeset pf sf 
+            ${(P)comments_option:-false} && pf=":\n: " sf='\n:' || pf="\n\n# " sf="\n$__"
+            eval $outputvar'+=("$pf$section_header[$1]$sf")'
             unset "section_header[$1]"
         fi
     }
