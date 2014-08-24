@@ -483,7 +483,8 @@ __MAIN () {
     typeset -g SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
     shift
 
-    typeset -g BUGREPORTS=storage-init@ethanschoonover.com
+    typeset -g ISSUES_EMAIL=storage-init@ethanschoonover.com
+    typeset -g ISSUES_URL=http://github.com/altercation/storage-gen/issues
 
     # -----------------------------------------------------------------
     # Create command line script options and associated help information
@@ -696,7 +697,8 @@ __MAIN () {
         --command_line_                 COMMAND_LINE \
         --debug_option_                 DEBUG \
         --debug_log_                    DEBUGLOG \
-        --debug_report_url_             BUGREPORTS \
+        --debug_report_email_           ISSUES_EMAIL \
+        --debug_report_url_             ISSUES_URL \
         --input_filename_               INPUTFILE \
         --input_filepath_               SOURCEFILE \
         --input_fileraw_                FILERAW \
@@ -1372,6 +1374,7 @@ __InitializeTrapsAndLog () {
         command_line_: \
         debug_log_: \
         debug_option_: \
+        debug_report_email_: \
         debug_report_url_: \
         input_filename_: \
         input_filepath_: \
@@ -1401,14 +1404,16 @@ __InitializeTrapsAndLog () {
     "# RUN AS:       ${${(M)USERNAME:#root}:-non-root}"
     "# ZSH VERSION:  $ZSH_VERSION"
     "# COMMAND LINE: ${(P)command_line_}"
-    "# SUBMIT TO:    ${(P)script_name_}@ethanschoonover.com\n"
+    "# SUBMIT TO:    ${(P)debug_report_email_}\n"
+    "# SUBMIT TO:    ${(P)debug_report_url_}\n"
     "typeset -gA $system_data_"
     "typeset -ga $input_fileraw_"
     )
     print -l -- $debug_log_header > ${(P)debug_log_}
 
     # turn off execution tracking if debug isn't active
-    ${(P)debug_option_:-false} && {
+    if ${(P)debug_option_:-false}
+    then
         execute () {
             typeset -ag ROLLCALL; ROLLCALL+=($1)
             ${QUIET:-false} || {
@@ -1416,7 +1421,9 @@ __InitializeTrapsAndLog () {
             print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
             print ${COLOR[default]:-} 1>&2
             eval $@ }
-        } || { execute () { eval $@ } }
+    else
+        execute () { eval $@ }
+    fi
 
     eval 'TrapCleanup  () {
             typeset dlog='${(P)debug_log_}' stemp='${(P)script_temp_}';
@@ -1433,9 +1440,12 @@ __InitializeTrapsAndLog () {
                 ( ! ${'$debug_option_':-false} ) || {
                     mv $dlog ${debug_log_save::=/tmp/${dlog:t}};
                     print -n "${COLOR[default]:-}" 1>&2;
-                    print "Debug log saved to $debug_log_save" 1>&2;
-                    print "(log may be submitted to '${(P)debug_report_url_}')"\
-                        "\n" 1>&2; };
+                    print "Debug log saved to $debug_log_save\n" 1>&2;
+                    print "Log may be submitted to: '${(P)debug_report_email_}'"
+                    print "or pasted (after a description) into a new issue at:" 1>&2; 
+                    print "'${(P)debug_report_url_}'" 1>&2;
+                    print "(e.g. with '\''xclip -se c $debug_log_save'\'')\n" 1>&2;
+                };
             fi
             if [[ -d ${stemp:-} ]]
             then
@@ -1445,11 +1455,13 @@ __InitializeTrapsAndLog () {
 
     # using zshexit for script cleanup since TRAPEXIT runs on every function
     # exit
+    # xxx
     eval 'zshexit () {
             (( $status > 0 )) \
             && '$debug_option_'=true;
             TrapCleanup;
             }'
+#    eval 'trap '\''(( $status>0 )) && '$debug_option_'=true; TrapCleanup;'\'' EXIT'
 
     eval 'TRAPERR () {
             teelog --category UNHANDLED_ERROR --color red \
@@ -1472,6 +1484,7 @@ __InitializeTrapsAndLog () {
         typeset -g QUIET=""
         typeset -ag ROLLING
         TRAPDEBUG () {
+            typeset i
             for i in {1..4}
             do
                 ROLLING[$i]=${ROLLING[$((i+1))]:-}
@@ -1598,6 +1611,7 @@ __InitializeRulesets () {
         DESCRIPTION \
         EQUIVALENTS \
         FIELDS \
+        FSTEST \
         INHERIT \
         ITEMOPTIONS_BOOL \
         ITEMOPTIONS_SCAL \
@@ -1617,7 +1631,20 @@ __InitializeRulesets () {
     # to the right.
     VALUES[type]="drive partition logical encryption swap filesystem subvolume"
 
+    FSTEST[fstype]="bfs btrfs cramfs ext2 ext3 ext4 ext4dev fat jfs minix
+                    msdos reiserfs vfat xfs"
     VALUES[fstype]=${${=${listing::=$(print ${:-=mkfs}.*)}}##$(print =mkfs).}
+    typeset -a testfs valuesfs newfs missingfs
+    valuesfs=(${=VALUES[fstype]}) testfs=(${=FSTEST[fstype]})
+    newfs=(${valuesfs:|testfs})
+    missingfs=(${testfs:|valuesfs})
+    [[ -n ${newfs:-} ]] && alert "New mkfs support noted: ${newfs}. Your
+    system either supports new filesystem types or the mkfs command names
+    have changed."
+    [[ -n ${missingfs:-} ]] && alert "Expected filesystem support missing:
+    ${missingfs}. If you don't plan on using those filesystems, this
+    won't matter."
+
     VALUES[code]=${(uM)${:-$(sgdisk -L)}:#([0-9]|[a-f])(#c4)}
     debugLog fstypes "fstypes present via mkfs: ${(@)VALUES[fstype]}"
 
@@ -1805,7 +1832,6 @@ __InitializeRulesets () {
     do
         ANCESTORS[$type]=$(compileValidAncestors $type)
     done
-
 
     # options used during filesystem/luks/swap format/mount/open/activate
     OPTIONS=(
@@ -2103,7 +2129,7 @@ __SourceDebugLog () {
             zsh +n ${(P)source_file_} &>/dev/null || {
                 fail "${(P)source_file_} failed syntax check. Check format." }
             . ${(P)source_file_}
-            warn "\nUsing a simulated environment sourced using the
+            warn "Using a simulated environment sourced using the
                   --debugsource option If the sourced environment differs
                   from the actual environment, resulting script will not
                   be safe to execute on this system."
@@ -2112,6 +2138,10 @@ __SourceDebugLog () {
                   Check filename/path."
         fi
     fi
+    [[ -n ${(P)return_system_data_:-} ]] \
+        && debugCapture $return_system_data_
+    [[ -n ${(P)return_fileraw_:-} ]] \
+        && debugCapture $return_fileraw_
 }
 __CaptureEnvironment () {
     # creates an array with keys formatted similarly to:
@@ -2196,7 +2226,7 @@ __CaptureEnvironment () {
         this will not affect you."
     fi
 
-    debugCapture SYSTEM
+    debugCapture $_return_array
 }
 __FileLocate () {
 
@@ -3799,8 +3829,8 @@ __printTree () {
 
     typeset indentpercent=2 softtab=4
     typeset indent=$(( indentpercent*$COLUMNS/100 ))
-    typeset i=${(l.$indent...):-}
-    typeset ii="$i$i"
+    typeset _i=${(l.$indent...):-}
+    typeset _ii="$_i$_i"
 
     typeset columns=$(($COLUMNS)) # wrap columns
     typeset width=$indent # tree line width
@@ -3828,15 +3858,15 @@ __printTree () {
 
     # print intro
     print
-    print "${i}${COLOR[white]:-}Source filename: ${(P)input_filename}"
-    print "${i}Source filepath: ${(P)input_filepath}"
+    print "${_i}${COLOR[white]:-}Source filename: ${(P)input_filename}"
+    print "${_i}Source filepath: ${(P)input_filepath}"
     print
-    print "${i}${COLOR[default]:-}Items in [BRACKETS] have been automatically inferred.\n"
+    print "${_i}${COLOR[default]:-}Items in [BRACKETS] have been automatically inferred.\n"
     if ! ${COLOROFF:-false}
     then
-        print "${i}Partitions in ${COLOR[red]}RED${COLOR[default]} are to be replaced due to --replace"
-        print "${i}Partitions in ${COLOR[yellow]}YELLOW${COLOR[default]} are to be retained due to --keep"
-        print "${i}Partitions in ${COLOR[green]}GREEN${COLOR[default]} are to be newly created\n"
+        print "${_i}Partitions in ${COLOR[red]}RED${COLOR[default]} are to be replaced due to --replace"
+        print "${_i}Partitions in ${COLOR[yellow]}YELLOW${COLOR[default]} are to be retained due to --keep"
+        print "${_i}Partitions in ${COLOR[green]}GREEN${COLOR[default]} are to be newly created\n"
     fi
 
     buildTree () {
@@ -3856,10 +3886,10 @@ __printTree () {
             # and similarly add/don't add a continuation line
             if [[ $record != ${children[-1]} ]];
             then
-                line1="$ii${leader:+$x}${leader:-}${leader:+$t}"
+                line1="$_ii${leader:+$x}${leader:-}${leader:+$t}"
                 add=$m$x
             else
-                line1="$ii${leader:+$x}${leader:-}${leader:+$l}"
+                line1="$_ii${leader:+$x}${leader:-}${leader:+$l}"
                 add=$s$x
             fi
             if (( ${+active[auto]} )); then
@@ -3874,7 +3904,7 @@ __printTree () {
             fi
 
             # print continuation line if not initial line
-            [[ $record != 1 ]] && print "$ii$x${leader:-}$m"
+            [[ $record != 1 ]] && print "$_ii$x${leader:-}$m"
 
             typeset -a e_linebuilder
             e_linebuilder=(
@@ -3931,7 +3961,7 @@ __printTree () {
 
                 # add appropriate leader to nested line, only if not first loop
                 [[ -n $line_head ]] && {
-                line="${ii}$x${leader:-}${add}$c${(l.$((${#type}-$width-1))...):-}$line"
+                line="${_ii}$x${leader:-}${add}$c${(l.$((${#type}-$width-1))...):-}$line"
                 }
 
                 # wrap off the current item value, then take the first line
@@ -4819,13 +4849,15 @@ teelog () {
         eval REPORT_${(U)category}'+=("${${=@}}")'
     fi
     if ! ${noprint:-false} && ! ${QUIET:-false} && \
-    [[ ${VERBOSE:-false} == ${verbose:-${VERBOSE:-false}} ]]
+       [[ ${VERBOSE:-false} == ${verbose:-${VERBOSE:-false}} ]]
     then
         if ! { ${verbose:-false} && ! ${VERBOSE:-false} }
-        print -n "\\n${COLOR[${color:-default}]:-}" 1>&2;
-        print -n "$(print "${(U)category:-}${category:+: }${=*}" \
-            | fold -sw $COLUMNS)" 1>&2;
-        print "${COLOR[default]:-}" 1>&2;
+        then
+            print -n "\\n${COLOR[${color:-default}]:-}" 1>&2;
+            print -n "$(print "${(U)category:-}${category:+: }${=*}" \
+                | fold -sw $COLUMNS)" 1>&2;
+            print "${COLOR[default]:-}" 1>&2;
+        fi
     fi
 }
 reportLog () {
@@ -4837,7 +4869,10 @@ reportLog () {
     print "\n\n# ${(U)SCRIPTNAME} ${(j:/:)${:-${(Uu)^=CATEGORIES}S}}\n#"
     print "# The following comment sections contain messages"
     print "# output during the $SCRIPTNAME processing"
-    for category in ${(Uu)=CATEGORIES}
+    typeset -a categories
+    categories=(${(Uu)=CATEGORIES})
+    typeset testvalue
+    () { for category in $categories
     do
         [[ -n ${(P)${:-REPORT_$category}} ]] || continue
         print "#\n# ${category}S ${___::=${(r:$(($width-${#category}-4))::==:):-}}"
@@ -4846,7 +4881,7 @@ reportLog () {
             print "#"
             print -l -- "# "${(@f)^"$(print $lineitem | fold -sw $width)"}
         done
-    done
+    done }
 }
 reportInferred () {
     teelog --category inference --color cyan ${=*}
