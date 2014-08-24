@@ -4767,7 +4767,13 @@ genMounts () {
             typeset -a mountcmd
             mountcmd=("mount")
             mountcmd+=("${(j:,:)${(u)=${(s:,:)mountopts}}}")
-            mountcmd+=("$(getDevpath ${active[index]}) ${mountpath}")
+            if [[ ${active[parent,type]} == partition \
+               && -n ${active[parent,label]:-} ]]
+            then
+                mountcmd+=("-L $active[parent,label] ${mountpath}")
+            else
+                mountcmd+=("$(getDevpath ${active[index]}) ${mountpath}")
+            fi
             eval $outputvar'+=("$mountcmd")'
         else # subvolume
             eval $outputvar'+=(
