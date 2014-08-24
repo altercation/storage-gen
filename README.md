@@ -166,7 +166,14 @@ under a btrfs filesystem which is, itself, not mounted. Note that since there
 is an existing partition that will be preserved, no drive erasure takes place. 
 For this example, we look at the script output. 
 
-You can run this command now and use the same simulated machine environment 
+    # keep-efi template - preserves existing EFI partition 
+    # and makes new btrfs subvolume config for system and home 
+    partition --keep --code ef00 --mountpoint /boot 
+    filesystem --encrypt 
+        subvolume --mountpoint / 
+        subvolume --mountpoint /home 
+
+You can try this template now and use the same simulated machine environment 
 using the following command (run from the root of the storage-gen script 
 directory, or adjusting the `--sourcedebug` path to locate the correct file). 
 
