@@ -168,6 +168,7 @@ For this example, we look at the script output.
 
     # keep-efi template - preserves existing EFI partition 
     # and makes new btrfs subvolume config for system and home 
+
     partition --keep --code ef00 --mountpoint /boot 
     filesystem --encrypt 
         subvolume --mountpoint / 
