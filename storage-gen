@@ -2856,9 +2856,10 @@ InflateStructure__InsertGapNoIndentSiblings () {
     '%%,type}'          '# and trim the ,type part off'
     '[1]}'              '# take first of (reverse sorted) sibling indexes'
     )
-    ip_sib_id=${(M)insertion_point%%[0-9]##}
-    ip_head=${insertion_point%%[0-9]##}
-    sibscheck=${(P)${:-${input_array}[(I)ip_head,[0-9]}##,type]}    
+    typeset ip_sib_id=${(M)insertion_point%%[0-9]##}
+    typeset ip_head=${${insertion_point%%[0-9]##}%,}
+    print "\${(P)\${:-${input_array}\[(I)${ip_head},[0-9]}##,type]}"
+    typeset sibscheck=${(P)${:-${input_array}[(I)${ip_head},[0-9]##,type]}}    
     if [[ -n ${sibscheck} ]]
     then
         max_sib_id=${(ej..)e:#\#*} 
@@ -4772,6 +4773,7 @@ genSubvolume () {
                 # relative path: trim just any leading /
                 mntpnt=${active[mountpoint]#/}
             fi
+            typeset fsindex
             fsindex="$(getFilesystemAncestorValue $active[index] index)"
             devpath="$(getDevpath $fsindex)"
             if [[ ${active[mountpoint]:-} == / ]]
@@ -4874,6 +4876,7 @@ genMounts () {
             eval $outputvar'+=("$mountcmd")'
         elif [[ ${active[type]} == subvolume ]]
         then
+            typeset fsmnt
             fsmnt="$(getFilesystemAncestorValue $active[index] mountpoint)"
             # if no parent filesystem mountpoint, mount subvolume directly
             if [[ -z ${fsmnt} ]]
@@ -4901,6 +4904,7 @@ genMounts () {
                     )
                 }
                 mountcmd+=("-o ${(j:,:)${(u)=${(s:,:)mountopts}}}")
+                typeset fsindex
                 fsindex="$(getFilesystemAncestorValue $active[index] index)"
                 () {
                 . <(active $fsindex)
