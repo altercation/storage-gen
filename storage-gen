@@ -445,6 +445,10 @@ remove escaped newlines within double brackets!
 make a "getDrivePath" function that returns correct value for each
 type
 make a getDrivePath function, same, just more specific
+
+Should sort subvolume siblings according to mountpoint so they are
+created in the proper order... we do this for actual mountpoints but
+not for the pre-mount subvolume creation stage
 ------------------------------------------------------------------------------
 
 :<< \
@@ -1421,13 +1425,11 @@ __InitializeTrapsAndLog () {
 
     # using zshexit for script cleanup since TRAPEXIT runs on every function
     # exit
-    # xxx
     eval 'zshexit () {
             (( $status > 0 )) \
             && '$debug_option_'=true;
             TrapCleanup;
             }'
-#    eval 'trap '\''(( $status>0 )) && '$debug_option_'=true; TrapCleanup;'\'' EXIT'
 
     eval 'TRAPERR () {
             teelog --category UNHANDLED_ERROR --color red \
@@ -1626,7 +1628,7 @@ __InitializeRulesets () {
     filesystem  "fstype mountpoint label"
     logical     ""
     partition   "bootable code size partnum new keep replace label uuid"
-    subvolume   "mountpoint"
+    subvolume   "mountpoint label"
     swap        "label"
     )
 
@@ -4734,14 +4736,14 @@ genFilesystem () {
 }
 genSubvolume () {
 
-    . <(localopts script_temp_: start_at: )
+    . <(localopts script_temp_: start_at: tmpmnt:)
 
     typeset script_temp=${(P)script_temp_:-$SCRIPTTEMP}
 
     typeset -a children
     children=($(children --of "${start_at:-}"))
 
-    typeset -g genSubvolume_runcheck=${genSubvolume_runcheck:-false}
+    typeset -a btrfscmd; btrfscmd=()
 
     for record in $children
     do
@@ -4754,79 +4756,74 @@ genSubvolume () {
         # TODO: we could just make all the subvolumes now and be
         # done with it
 
-        typeset -a btrfscmd; btrfscmd=()
 
         if [[ ${active[type]} == subvolume ]] \
             && ! ancestorOrSelfIsNoclobber --index $record \
             && [[ -n ${active[mountpoint]:-} ]]
         then
-            if [[ ${active[mountpoint]:0:1} != "/" ]]
-            then
-                fail "Subvolume has non absolute path mountpoint
-                      (${active[mountpoint]})."
-            fi
-
             sectionHeader subvolume
-
-            if [[ ${active[parent,type]} == filesystem ]]
+            typeset mntpnt="" devpath="" fsmnt=""
+            fsmnt="$(getFilesystemAncestorValue $active[index] mountpoint)"
+            if [[ ${active[mountpoint]:0:1} == "/" ]]
             then
-                typeset mntpnt
-                mntpnt=${active[mountpoint]#${active[parent,mountpoint]:-/}}
-                [[ -n ${mntpnt:-} ]] || mntpnt=root
-                if ! $genSubvolume_runcheck
-                then
-                    genSubvolume_runcheck=true
-                    btrfscmd+=(
-                    '[[ -d ${tmpmnt::=/tmp/btrfs} ]] || mkdir -p $tmpmnt'
-                    '\nmount -t btrfs '$(getDevpath $active[parent,index])' $tmpmnt'
-                    )
-                fi
-                btrfscmd+=(
-                'btrfs subvolume create $tmpmnt/'$mntpnt
-                )
+                # absolute path: trim the filesystem mountpoint
+                mntpnt=${active[mountpoint]#${fsmnt:-/}}
+            else
+                # relative path: trim just any leading /
+                mntpnt=${active[mountpoint]#/}
             fi
-#
-#            if [[ ${active[parent]} == filesystem \
-#               && -n ${active[parent,mountpoint]} \
-#               && -n ${active[mountpoint]} ]] \
-#               || \
-#               [[ ${active[parent]} == subvolume \
-#               && -z ${active[parent,mountpoint]} \
-#               && -n ${active[mountpoint]} ]]
-#            then
-#                # subvolume child of filesystem with normal mountpoint
-#                # or a child of another subvolume
-#                # so we should make the subvolume after filesystem has been
-#                # mounted
-#            elif [[${active[parent]} == filesystem \
-#               && -z ${active[parent,mountpoint]} \
-#               && -n ${active[mountpoint]} ]]
-#            then
-#                # subvolume child of filesystem without a mountpoint
-#                # and has a mountpoint, so we need to mount filesystem
-#                # and create the subvolume, then unmount so we can
-#                # later remount subvolume directly
-#                mount parent filesystem on temp mountpoint
-#                make subvolume
-#                unmount
-#            fi
+            fsindex="$(getFilesystemAncestorValue $active[index] index)"
+            devpath="$(getDevpath $fsindex)"
+            if [[ ${active[mountpoint]:-} == / ]]
+            then
+                mntpnt=${${active[label]:-root}// /_}
+            fi
+            if [[ -z ${tmpmnt:-} ]]
+            then
+                typeset tmpmnt=/tmp/btrfs
+                btrfscmd+=(
+                '[[ -d '$tmpmnt' ]] || mkdir -p '$tmpmnt
+                'mount -t btrfs '$devpath' '$tmpmnt)
+            fi
+            typeset newpath=$tmpmnt/$mntpnt
+            if [[ ${newpath:h} != $tmpmnt ]]
+            then
+                # the mountpoint for this subvolume is not root level
+                # so we add a conditional mkdir here. TODO: we should
+                # analyse the already created paths so we know if we
+                # really need this... it's a little blunt force right
+                # now.
+                btrfscmd+=('mkdir -p '${newpath:h})
+            fi
+            btrfscmd+=('btrfs subvolume create '$tmpmnt/$mntpnt)
         fi
 
     done
 
-    eval $outputvar'+=($btrfscmd)'
+    if [[ -n ${tmpmnt:-} ]]
+    then
+        btrfscmd+=("umount $tmpmnt")
+        tmpmnt=""
+    fi
 
+    eval $outputvar'+=($btrfscmd)'
 
     # we processed one set of siblings, now walk down each branch
     for record in $children; do
-        $0 --start_at $record
+        $0 --start_at $record ${tmpmnt:+--tmpmnt }${tmpmnt:-}
     done
 
-    if $genSubvolume_runcheck
-    then
-       eval $outputvar'+=("\numount \$tmpmnt")'
-    fi
-
+}
+getFilesystemAncestorValue () {
+    . <(localopts index: value:)
+    index=${index:-$1}
+    value=${value:-$2}
+    until [[ ${active[type]:-} == filesystem ]]
+    do
+        index=${index%%,#[0-9]##}
+        . <(active $index)
+    done
+    print ${active[$value]:-}
 }
 genMounts () {
 
@@ -4841,30 +4838,32 @@ genMounts () {
     sectionHeader mount
 
     typeset mountpoint mountpath record
-    typeset -a mountopts
+    typeset -a mountopts mountcmd
+    mountcmd=()
+    mountopts=()
 
     for mountpoint in $ordered_mountpoints; do
 
         record=${(k)mountpoint_records[(r)$mountpoint]}
+
         . <(active $record)
+
         mountpath="${${:-${(P)mountroot%/}/${active[mountpoint]#/}}%/}"
 
-        if [[ ${active[type]} != subvolume ]]
+        if [[ ${active[type]} == filesystem ]]
         then
-            mountopts=()
-            mountopts+=(
+            mountcmd=("mount")
+            mountopts=(
                 "${OPTIONS[mount]}"
                 "${OPTIONS[mount,${active[fstype]:-}]:-}"
                 )
-            (( ${+active[ssd]} )) && {
+            (( ${+active[drive,ssd]} )) && {
                 mountopts+=(
                 "${OPTIONS[mount,ssd]}"
                 "${OPTIONS[mount,${active[fstype]:-},ssd]:-}"
                 )
             }
-            typeset -a mountcmd
-            mountcmd=("mount")
-            mountcmd+=("${(j:,:)${(u)=${(s:,:)mountopts}}}")
+            mountcmd+=("-o ${(j:,:)${(u)=${(s:,:)mountopts}}}")
             if [[ ${active[parent,type]} == partition \
                && -n ${active[parent,label]:-} ]]
             then
@@ -4873,14 +4872,62 @@ genMounts () {
                 mountcmd+=("$(getDevpath ${active[index]}) ${mountpath}")
             fi
             eval $outputvar'+=("$mountcmd")'
-        else # subvolume
-            eval $outputvar'+=(
-            "btrfs subvolume create ${(q-)mountpath}"
-            )'
+        elif [[ ${active[type]} == subvolume ]]
+        then
+            fsmnt="$(getFilesystemAncestorValue $active[index] mountpoint)"
+            # if no parent filesystem mountpoint, mount subvolume directly
+            if [[ -z ${fsmnt} ]]
+            then
+                mountcmd=("mount -t btrfs")
+                typeset mntpnt="" devpath="" fsmnt=""
+                if [[ ${active[mountpoint]:-} == / ]]
+                then
+                    mountopts=(
+                    "subvol=${${active[label]:-root}// /_}"
+                    )
+                else
+                    mountopts=(
+                    "subvol=${active[mountpoint]:t}"
+                    )
+                fi
+                mountopts+=(
+                    "${OPTIONS[mount]}"
+                    "${OPTIONS[mount,btrfs]:-}"
+                    )
+                (( ${+active[drive,ssd]} )) && {
+                    mountopts+=(
+                    "${OPTIONS[mount,ssd]}"
+                    "${OPTIONS[mount,btrfs,ssd]:-}"
+                    )
+                }
+                mountcmd+=("-o ${(j:,:)${(u)=${(s:,:)mountopts}}}")
+                fsindex="$(getFilesystemAncestorValue $active[index] index)"
+                () {
+                . <(active $fsindex)
+                if [[ ${active[parent,type]} == partition \
+                   && -n ${active[parent,label]:-} ]]
+                then
+                    mountcmd+=("-L $active[parent,label] ${mountpath}")
+                else
+                    mountcmd+=("$(getDevpath ${active[index]}) ${mountpath}")
+                fi
+                }
+                eval $outputvar'+=("$mountcmd")'
+            fi
+        else
+            fail "Unexpected storage type with mountpoint ($active[type])"
         fi
 
-    done
+            if [[ ${active[mountpoint]:0:1} == "/" ]]
+            then
+                # absolute path: trim the filesystem mountpoint
+                mntpnt=${active[mountpoint]#${fsmnt:-/}}
+            else
+                # relative path: trim just any leading /
+                mntpnt=${active[mountpoint]#/}
+            fi
 
+    done
 }
 getDevpath () {
     . <(localopts index:)
