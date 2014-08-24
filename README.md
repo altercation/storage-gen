@@ -30,8 +30,8 @@ with the following command
     # storage-gen --help 
 
 To create a configuration script for a typical new Arch Linux system, you could 
-use the following commands (these only output text or tree information, they do 
-not execute any changes to the system) 
+use the following commands (these only output text or tree information, **they 
+do not execute any changes to the system**) 
 
     # storage-gen new-simple 
     # storage-gen new-simple --tree 
@@ -78,7 +78,7 @@ this
 
 ### Automatically creates this script 
 
-Note that it does *not* automatically run this script. You may save it via 
+Note that it does **not** automatically run this script. You may save it via 
 standard output redirection or using the `--output` command line option. This 
 gives you the important opportunity to review the output and make changes to 
 either the template or the raw script output itself. 
@@ -222,12 +222,12 @@ prompt for other drives to be selected (prudence). If, however, you are (for
 example) running the script on a machine that is not the installation target, 
 you might want to ignore the actual system environment for the time being 
 
-    storage-gen my-template --drives "/dev/sda,/dev/sdb" --ignore 
+    storage-gen my-template --drives "/dev/sda,/dev/sdb" --just 
 
 Finally, if you want the script to then just pick the first available drive and 
 skip asking you so many questions, tell it to not query 
 
-    storage-gen my-template --drives "/dev/sda,/dev/sdb" --ignore --noquery 
+    storage-gen my-template --drives "/dev/sda,/dev/sdb" --just --guess 
 
 ### Outline Your Storage: 
 
@@ -393,24 +393,6 @@ No comments in the final script. Turns off all comments and blank lines in the
 script output. Removing these does not change the functionality of the final 
 script.
 
-`-e, --environ `
-
-Ignore live system environment. Disregards the current systems drive and 
-partition environment. Allows script to create output based on *only* the 
-provded template. No interactive queries will be run for missing drive or 
-partition information. Drives must either be set in the drive entries in the 
-template or using the --drives option. This allows creation of scripts that 
-don't match the current system configuration. This is different from full 
-environment simulation with the --debug and --debugsource options.
-
-`-g, --guess `
-
-No interactive queries, make best guesses. Don't ask for any user input. Pick 
-first obvious choices for the user, for example use first available drives 
-(internal or as provided by the --drives option), automatically match 
-partitions when there is only one existing partition that matches the values, 
-etc. Best to run without this option first to see what happens.
-
 `-h, --help `
 
 Show summary of help information. Use --usage for expanded help.
@@ -419,12 +401,23 @@ Show summary of help information. Use --usage for expanded help.
 
 List builtin storage-gen templates.
 
-`-s, --suppress `
+`-q, --quiet `
 
 No messages or warnings. Only display actual script (or tree) output, skip 
 informational messages (the informational messages will still be output in the 
 script itself unless the --commentsoff option is selected. With this option, a 
 single error message will be output to standard error if the script fails.
+
+`-s, --skip `
+
+Skip checking the current system. Disregards the current systems drive and 
+partition environment. Allows script to create output based on *only* the 
+provded template (and any --drives option values provided on the command line). 
+If you want a script that isn't valid for the current system (because either 
+it's for an entirely different system configuration or because the target 
+installation target is currently mounted), use this option.   Because the 
+current system is being ignored, no interactive queries for missing values will 
+be run in this mode.
 
 `-t, --tree `
 
@@ -440,6 +433,13 @@ Displays detailed usage information. Adds a summary of the types of options and
 arguments that are valid for each storage type entry. Redirect to a file or 
 pipe through a pager such as less. See also the storage-gen README available in 
 the project git repository.
+
+`-y, --yes `
+
+No interactive queries (pick the first 'best' answer for potential queries. For 
+example, for missing drive entries, pick the first available, unmounted, 
+internal drive). This option won't work with the --skip option since --yes 
+still requires information about the current system environment.
 
 `-A, --alpha `
 
@@ -479,7 +479,9 @@ Turn off inference of missing values.
 Keep all existing partitions. Prevents disk formatting, even if no actual 
 '--keep' or '--replace' options have been set on partitions in the template. 
 Without at least one partition with one of those options OR this command line 
-option, the final script will include a disk format command.
+option, the final script will include a disk format command. With this option 
+on the command line, no disk formatting will occur and existing partitions will 
+be preserved (unless --replace has been specified for a partitio).
 
 `-L, --listcodes `
 
@@ -516,13 +518,13 @@ Turn off warning query in script output.
 
 `-d, --drives '/dev/sdX,/dev/sdY'`
 
-List of drive paths to use in output. Force the use of drives from a comma 
-separated list, for example: --drives '/dev/sda' or --drives 
-'/dev/sda,/dev/sdc'. Drives will be assigned to missing devpath values in 
-storage definition file using these values, in order. If used in combination 
-with the --ignore option, then the drives listed do not need to exist on the 
-current system. If the --drives option is used without the --ignore option, 
-then the current system is checked for the presence of these drives first.
+List of drive paths to use for drive items in the template (or *implied* drives 
+- you don't need an actual drive entry). This is precisely like adding a drive 
+--devpath /dev/sdX entry in the template (or adding a --devpath field to an 
+existing drive entry). THIS OVERRIDES EXISTING --devpath VALUES IN THE 
+TEMPLATE! Without this option or actual --devpath values in the template file, 
+the user will be prompted to select drives from the live system (if then --just 
+option hasn't been set and if --guess isn't set).
 
 `-m, --mountroot '/MOUNT/ROOT/PATH'`
 
@@ -556,10 +558,11 @@ template to use. This option is merely a more explicit alternative to that.
 
 ### Storage Definition File - Valid Item Options (Fields)
 
-These are the options (fields) that are acceptable for each of the storage types. 
-The types listed are the only valid types (drive, partition, etc.).
-* `drive:` device ssd
-* `partition:` bootable code size partnum new keep replace label
+These are the options (fields) that are acceptable for each of the 
+storage types. The types listed are the only valid types (drive, 
+partition, etc.).
+* `drive:` devpath ssd
+* `partition:` bootable code size partnum new keep replace label uuid
 * `logical:` Not yet implemented
 * `encryption:` luksformat luksopen pass label encrypt
 * `swap:` label
@@ -584,7 +587,7 @@ Keen an existing partition. The partition may be specified by --partnum (1),
 --devpath (/dev/sda1), or a matching unique value such as label, code, or even 
 size (assuming and exact match of label or size). If using code to match an 
 existing partition, either the sgdisk short code or the long code version of it 
-may be used. Run __initializeRulesets --listcodes to list all codes.
+may be used. Run __InitializeRulesets --listcodes to list all codes.
 
 `--replace `
 
@@ -688,4 +691,10 @@ value 'ram' will similarly set the partition size to match the install system
 memory, useful for partitions that contain swap devices. Note that if a 
 partition does contain a swap device without a size value assigned to either, a 
 size of 'ram' will be assigned by default.
+
+`--uuid 'UUID'`
+
+A uuid intended to match an existing partition; better to use another, simpler 
+field such as code, size, label to match existing partitions, but this is here 
+if you really like entering long hex code values (and for internal use).
 

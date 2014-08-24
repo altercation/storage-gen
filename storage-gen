@@ -483,6 +483,8 @@ __MAIN () {
     typeset -g SCRIPTTEMP="$(mktemp -d "/tmp/${SCRIPTNAME}-XXXXXX")"
     shift
 
+    typeset -g BUGREPORTS=storage-init@ethanschoonover.com
+
     # -----------------------------------------------------------------
     # Create command line script options and associated help information
     #
@@ -694,6 +696,7 @@ __MAIN () {
         --command_line_                 COMMAND_LINE \
         --debug_option_                 DEBUG \
         --debug_log_                    DEBUGLOG \
+        --debug_report_url_             BUGREPORTS \
         --input_filename_               INPUTFILE \
         --input_filepath_               SOURCEFILE \
         --input_fileraw_                FILERAW \
@@ -724,7 +727,7 @@ __MAIN () {
     ${LISTCODES:-false} && { __Usage --listcodes ;      exit 0 }
     ${LIST:-false}      && { __ListTemplates;           exit 0 }
 
-
+    # -----------------------------------------------------------------
     # if using a debug log file, source it here. it may contain
     # block device environment data and (possibly) source template
     # raw file data. whatever values are present will be used
@@ -732,11 +735,12 @@ __MAIN () {
     # or present information.
     #
     # TODO: implement local to global conversion in function
-    track __SourceDebugLog \
+    execute __SourceDebugLog \
         --source_file_          SOURCEDEBUG \
         --return_system_data_   SYSTEM      \
         --return_fileraw_       FILERAW
 
+    # -----------------------------------------------------------------
     # skip scanning the system environment if we already read in this data
     # via the --sourcedebug option OR if the --just (just use the
     # template data) option has been set (unless --envdebug is in play
@@ -752,11 +756,12 @@ __MAIN () {
         # and enables system configuration simulation via the
         # debug log output and the --sourcedebug option).
 
-        track __CaptureEnvironment          \
+        execute __CaptureEnvironment          \
             --return_array_ SYSTEM
 
     fi
 
+    # -----------------------------------------------------------------
     # dump the current environment (or the simulated environment)
     # to a human readable format. this is a combination of lsblk
     # and sgdisk data and makes it easier to scan both live system
@@ -766,6 +771,7 @@ __MAIN () {
         exit 0
     }
 
+    # -----------------------------------------------------------------
     # skip reading in the file if we already read in this data
     # via the --sourcedebug option
     [[ -n ${FILERAW:-} ]] || {
@@ -773,7 +779,7 @@ __MAIN () {
         # -------------------------------------------------------------
         # handle path variations (absolute, relative, remote)
         # and output a normalized local absolute path
-        track __FileLocate                      \
+        execute __FileLocate                      \
             --original_filepath_    INPUTFILE   \
             --return_filepath_      SOURCEFILE  \
             --tmpdir_               SCRIPTTEMP  \
@@ -782,7 +788,7 @@ __MAIN () {
 
         # -------------------------------------------------------------
         # read the raw file into an array for processing
-        track __FileRead                    \
+        execute __FileRead                    \
             --source_filepath_      SOURCEFILE  \
             --return_array_         FILERAW   
 
@@ -792,7 +798,7 @@ __MAIN () {
     # strip out comments and escaped newlines
     # also adds in the --indent value for each valid line
 
-    track __FileClean                       \
+    execute __FileClean                       \
         --source_array_         FILERAW     \
         --return_array_         FILECLEAN 
 
@@ -800,24 +806,17 @@ __MAIN () {
     # convert the cleaned file data to a tree structured
     # associative array
 
-    track __FileConvertToArray              \
+    execute __FileConvertToArray              \
         --source_array_         FILECLEAN   \
         --return_array_         STORAGE     \
         --ruleset_array_fields_ FIELDS
-
-# new for __inflate TODO
-    #--input_array        STORAGE_RAW     \
-    #--output_array       STORAGE_INFLATED     \
-    #OR (using staging)... at least provide opportunity to be immutable
-    #--input_array        STORAGE     \
-    #--output_array       STORAGE     \
 
     # -----------------------------------------------------------------
     # working outwards from each storage type  record in the
     # array, move fields that belong elsewhere to new or
     # existing records, reshuffling and creating as needed
 
-    track __InflateStructure                \
+    execute __InflateStructure                \
         --input_storage_array_  STORAGE     \
         --output_storage_array_ STORAGE     \
         --fields_array_         FIELDS      \
@@ -829,15 +828,11 @@ __MAIN () {
         --inherit_array_        INHERIT     \
         --valid_array_          VALID
 
-# new for __assume - CHANGE TO __addMissingDefaults TODO
-    #--input_array        STORAGE_RAW     \
-    #--output_array       STORAGE_INFLATED     \
-
     # -----------------------------------------------------------------
     # limited application of defaults to missing required fields,
     # for example: filesystem --fstype and swap partition --size
 
-    track __AssumeValues                    \
+    execute __AssumeValues                    \
         --storage_array_        STORAGE     \
         --fields_array_         FIELDS      \
         --inherit_array_        INHERIT     \
@@ -849,7 +844,7 @@ __MAIN () {
     # strip out some of the extra metadata here (notes, etc.)
     # TODO: could move this into the tree print function?
 
-    track __ScrubStructures                 \
+    execute __ScrubStructures                 \
         --storage_array_        STORAGE     \
         --verbose_array_        VERBOSE     \
         --values_array_         VALUES
@@ -862,8 +857,9 @@ __MAIN () {
     # partition paths/partnums, then it's good to know before
     # the user wastes time selecting drives, etc.
 
-    () { return 0;
-    track __ValidateStructures              \
+    () {
+    #return 0;
+    execute __ValidateStructures              \
         --children_array_       CHILDREN    \
         --required_array_       REQUIRED    \
         --siblings_array_       SIBLINGS    \
@@ -899,21 +895,21 @@ __MAIN () {
     # of course I could just write the new drives regardless of
     # anything else, and let the validators sort it out
 
-    track   __AssignDrives                  \
+    execute __AssignDrives                  \
             --storage_tree_     STORAGE     \
             --system_data_      SYSTEM      \
             --drives_override_  DRIVES      \
             --yes_to_all_       YES         \
             --skip_system_data_ SKIP
 
-    track   __AssignPartitions              \
+    execute __AssignPartitions              \
             --system_mapping_   MAPPING     \
             --storage_tree_     STORAGE     \
             --system_data_      SYSTEM      \
             --yes_to_all_       YES         \
             --skip_system_data_ SKIP
 
-    track __printTree                       \
+    execute __printTree                       \
         --input_array           STORAGE     \
         --tree_option           TREE        \
         --input_filename        INPUTFILE   \
@@ -925,7 +921,7 @@ __MAIN () {
     # (no missing devpaths, partnums, they match, etc.)
     # if no --just option, then make sure they exist
 
-    track __validatePartitions              \
+    execute __validatePartitions              \
         --drives_array          DRIVES      \
         --input_array           STORAGE     \
         --blockenv_array        SYSTEM      \
@@ -933,7 +929,7 @@ __MAIN () {
 
     # create the actual script output with partitioning,
     # filesystem creation, encryption and mounting commands
-    track __genPayload                      \
+    execute __genPayload                      \
         --input_array           STORAGE     \
         --outputvar             PAYLOAD     \
         --sourcefile            SOURCEFILE  \
@@ -946,7 +942,7 @@ __MAIN () {
 
     # optionally print out a tree representation of the
     # final composed structure
-    track __printTree                       \
+    execute __printTree                       \
         --input_array           STORAGE     \
         --tree_option           TREE        \
         --input_filename        INPUTFILE   \
@@ -958,7 +954,7 @@ __MAIN () {
     ((   ${TREE:-false}                     \
     ||   ${ENVDEBUG:-false} )               \
     && ! ${FORCE:-false}    ) ||            {
-    track __printPayload                    \
+    execute __printPayload                    \
         --input_array           PAYLOAD     \
         --comments_option       COMPACT     }
 
@@ -974,6 +970,8 @@ __AssumeValues () {
 
     ${(P)infer_off_option_:-false} && return 0
 
+    typeset -A infer_warnings
+
     assumeTypeSpecificValues () {
         . <(localopts start_at:)
         typeset -a children
@@ -983,18 +981,20 @@ __AssumeValues () {
         do
             AssumeValues__AssumeFilesystemValues    \
                 --record_index      $index          \
+                --infer_warnings_   infer_warnings  \
                 --storage_array_    $storage_array_ || return 1
             AssumeValues__AssumePartitionValues     \
                 --record_index      $index          \
+                --infer_warnings_   infer_warnings  \
                 --storage_array_    $storage_array_ || return 1
             $0 --start_at $index || return 1
         done
     }
-
     while ! assumeTypeSpecificValues; do :; done
+    [[ -z ${infer_warnings:-} ]] || fail ${${(o)infer_warnings}[1]}
 }
 AssumeValues__AssumeFilesystemValues () {
-    . <(localopts record_index: storage_array_:)
+    . <(localopts record_index: storage_array_: infer_warnings_:)
     . <(active $record_index)
     if [[ ${active[type]:-} == filesystem ]]
     then
@@ -1061,7 +1061,7 @@ AssumeValues__AssumeFilesystemValues () {
     
 }
 AssumeValues__AssumePartitionValues () {
-    . <(localopts record_index: storage_array_:)
+    . <(localopts record_index: storage_array_: infer_warnings_:)
     . <(active $record_index)
     if [[ ${active[type]:-} == partition ]]
     then
@@ -1090,6 +1090,7 @@ AssumeValues__AssumePartitionValues () {
                     --index $active[index] \
                     --note "Claimed size from ${dtype:-} descendant"
                 unset "${storage_array_}[$dsizekey]"
+                unset "${infer_warnings_}[$active[index]]"
                 return 1
 
             # if there is a swap descendant, it lacks a size
@@ -1103,11 +1104,12 @@ AssumeValues__AssumePartitionValues () {
                     --index $active[index] \
                     --note "Set missing size to match system ram due to swap
                             descendant"
+                unset "${infer_warnings_}[$active[index]]"
                 return 1
 
             # else count other siblings, if we're alone then max
             # (swap check must be before this)
-            elif [[ -z ${(A)sibs::=$(getOtherSiblings)} ]]
+            elif [[ -z ${(A)sibs::=$(getOtherSiblings $active[index])} ]]
             then
 
                 setActive size max
@@ -1117,6 +1119,7 @@ AssumeValues__AssumePartitionValues () {
                     --index $active[index] \
                     --note "Set paritition size to be maximum available free
                             space as it is the only partition listed"
+                unset "${infer_warnings_}[$active[index]]"
                 return 1
 
             # check for conditition of all existing peers
@@ -1155,6 +1158,7 @@ AssumeValues__AssumePartitionValues () {
                         --note "Set partition size to use maximum available
                                 space on drive as all other partitions are
                                 either either fixed size or are noclobber"
+                    unset "${infer_warnings_}[$active[index]]"
                     return 1
                 fi
 
@@ -1163,10 +1167,12 @@ AssumeValues__AssumePartitionValues () {
                 # we drop out of this loop here with an implicit
                 # return 0 as we've now done our best to infer
                 # partition values
-                warn "Unable to infer a size value for partition with internal
-                index: $active[index]. This may end up being fatal if we can't
-                resolve it on subsequent passes."
-
+                eval ${infer_warnings_}'[$active[index]]="
+                Unable to infer a size value for a new partition. This is fatal.
+                Probable cause is multiple new (no --keep or --replace tag)
+                partitions in template with no fixed size (we can only guess
+                that one no-size partition is maximum). Consider adding a fixed
+                size to at least one partition."'
             fi
 
         fi
@@ -1366,6 +1372,7 @@ __InitializeTrapsAndLog () {
         command_line_: \
         debug_log_: \
         debug_option_: \
+        debug_report_url_: \
         input_filename_: \
         input_filepath_: \
         input_fileraw_: \
@@ -1400,8 +1407,16 @@ __InitializeTrapsAndLog () {
     )
     print -l -- $debug_log_header > ${(P)debug_log_}
 
-    # turn off tracking if debug isn't active
-    ${(P)debug_option_:-false} || { track () { eval $@ } }
+    # turn off execution tracking if debug isn't active
+    ${(P)debug_option_:-false} && {
+        execute () {
+            typeset -ag ROLLCALL; ROLLCALL+=($1)
+            ${QUIET:-false} || {
+            print -n ${COLOR[cyan]:-} 1>&2
+            print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
+            print ${COLOR[default]:-} 1>&2
+            eval $@ }
+        } || { execute () { eval $@ } }
 
     eval 'TrapCleanup  () {
             typeset dlog='${(P)debug_log_}' stemp='${(P)script_temp_}';
@@ -1417,8 +1432,10 @@ __InitializeTrapsAndLog () {
                 fi
                 ( ! ${'$debug_option_':-false} ) || {
                     mv $dlog ${debug_log_save::=/tmp/${dlog:t}};
-                    print -n "\n${COLOR[red]:-}" 1>&2;
-                    print "Debug log saved to $debug_log_save" 1>&2; };
+                    print -n "${COLOR[default]:-}" 1>&2;
+                    print "Debug log saved to $debug_log_save" 1>&2;
+                    print "(log may be submitted to '${(P)debug_report_url_}')"\
+                        "\n" 1>&2; };
             fi
             if [[ -d ${stemp:-} ]]
             then
@@ -1431,7 +1448,6 @@ __InitializeTrapsAndLog () {
     eval 'zshexit () {
             (( $status > 0 )) \
             && '$debug_option_'=true;
-            print "Exiting...";
             TrapCleanup;
             }'
 
@@ -2404,6 +2420,25 @@ __InflateStructure () {
         typeset -Ag $storage_array_
         eval $storage_array_'=(${(kvPq-)input_storage_array_})'
     fi
+    insertParent () {
+        . <(localopts array: index: type:)
+        array=${array:-$storage_array_}
+        index=${index:-${active[index]:-}}
+        [[ -z ${type:-} ]] && fail "type missing in call to $0"
+        InflateStructure__InsertGapIndentSingleBranch \
+            --array $array --insertion_point $index 
+        eval $array'[$index,type]=$type'
+        eval $array'[$index,auto]=""'
+    }
+    insertSibling () {
+        . <(localopts array: index: type:)
+        array=${array:-$storage_array_}
+        index=${index:-${active[index]:-}}
+        [[ -z ${type:-} ]] && fail "type missing in call to $0"
+        InflateStructure__InsertGapNoIndentSiblings \
+            --array $array --insertion_point $index 
+        eval $array'[$index,type]=$type'
+    }
     isTypeValidForLineage () {
         # is $check the same type as, or a valid relative type of $against?
         typeset origopts; origopts="$@"
@@ -2800,6 +2835,88 @@ __InflateStructure () {
     }
     while ! inflateLoop; do :; done
 }
+InflateStructure__InsertGapNoIndentSiblings () {
+    # given an insertion point such as 1,2 - list all siblings (1,1 1,2 1,3)
+    # and return the maximum value of the sibling index component (3 in this
+    # example) work backwards from the max value sibling to the insertion
+    # point sibling index (2 in this example), shuffling them down by
+    # incrementing their value finally leaving an open gap at the top.
+    . <(localopts input_array: insertion_point:)
+    typeset -a e
+    e=(
+    '${'
+    '${'
+    '${(MOn)'           '# Match part of %%[0-9]##,type (below) reverse order'
+    $input_array
+    '[(I)'              '# Search through keys of array'
+    '${insertion_point' '# ...for keys matching the insert point'
+    '//(#b)'            '# ...modify that insert point search string'
+    '([0-9]##)(#e)'     '# ...by replacing the last numeric index component'
+    '/[0-9]##}'         '# ...and making it a regex to match its siblings'
+    ',type]'            '# ...add a type string to match key record field'
+    '%%[0-9]##,type}'   '# final index,type value from results (M) above'
+    '%%,type}'          '# and trim the ,type part off'
+    '[1]}'              '# take first of (reverse sorted) sibling indexes'
+    )
+    ip_sib_id=${(M)insertion_point%%[0-9]##}
+    ip_head=${insertion_point%%[0-9]##}
+    sibscheck=${(P)${:-${input_array}[(I)ip_head,[0-9]}##,type]}    
+    if [[ -n ${sibscheck} ]]
+    then
+        max_sib_id=${(ej..)e:#\#*} 
+        sibs=(${ip_head}{$max_sib_id..$ip_sib_id})
+        for sib_index in $sibs
+        do
+            new_sib_index=${sib_index//(#b)([0-9]##)(#e)/$(($match+1))}
+            for index in ${(P)${:-${input_array}[(I)$sib_index,*]}}
+            do
+                new_index=$new_sib_index${index##$sib_index}
+                eval $input_array'[$new_index]=${(P)${:-${input_array}[$index]}}'
+                unset "${input_array}[$index]"
+            done
+        done
+    else
+        # return if there were no siblings
+        return 0
+    fi
+}
+InflateStructure__InsertGapIndentSingleBranch () {
+    # inserts a gap at a specific (existing) record and indents the
+    # original record and children to be new children of new "gap" record
+    # (a new record can then be written at that gap point)
+    . <(localopts input_array: insertion_point:)
+    typeset -a new_index
+    typeset -a make_insertion_point_descendants
+    make_insertion_point_descendants=(
+    '${'
+    '${(On)'            '# make this reversed so as not to overwrite existing'
+    '${(Pk)'            '# reference to array, returning keys only'
+    '${:-'              '# dummy parameter expansion'
+    '${input_array}'    '# ...consisting of value (name) of input_array'
+    '[(I)'              '# ...and a search subscript'
+    '$insertion_point'  '# ...returning both self...'
+    ',*'                '# ...and children of the insertion_point'
+    ']}'
+    '//,/\\000'         '# swap out commas for null bytes for numerical sort'
+    '}'
+    '}'
+    '//\\000/,'         '# having sorted, replace the commas'
+    '}'
+    )
+    typeset index
+    for index in ${(ej..)make_insertion_point_descendants:#\#*}
+    do
+        # this newindex expansion fails inside the following assignment
+        # subscript. why? for now assigning to a paramt outside the subscript
+        # (specifically, the comment stripping fails in the subscript, even
+        # when not using the eval/input array reference)
+        # note - i assume this is because i need to add @ for array output
+        # as a parameter flag, TODO
+        new_index=${index//(#b)(#s)($insertion_point)(*)/$match[1],1$match[2]}
+        eval $input_array'[$new_index]=${(P)${:-${input_array}[$index]}}'
+        unset "${input_array}[$index]"
+    done
+}
 __ScrubStructures () {
     . <(localopts \
             storage_array_: \
@@ -2860,7 +2977,7 @@ __ValidateStructures () {
         # check that this item has no prohibited siblings
         for sibling in $(getOtherSiblings $record)
         do
-            stype=${(P)${:-${storage_array_}[$sibling,type]}:-}
+            typeset stype=${(P)${:-${storage_array_}[$sibling,type]}:-}
             valueInListOrListAbsent \
                 "${:-${siblings_array_}[${active[type]}]}" $stype || {
                 fail "'${active[type]}' is not a valid sibling of type 
@@ -2931,10 +3048,11 @@ __ValidateStructures () {
             && -z ${active[partnum]:-} ]] \
             && { activeIsNoclobber }; then
 
-            alert "Noclobber partition entry ${record##*,} under drive
-            ${record%%,*} has no --devpath or --partnum; will try to match
-            using other values (code, label, size if available) or through
-            user query."
+            alert "Partition entry tagged with 
+            --${active[keep]+keep}${active[replace]+replace} (partition
+            entry ${record##*,} under drive ${record%%,*}) has no --devpath
+            or --partnum; will try to match an existing system partition using
+            other values (code, label, size if available) or through user query."
 
         fi
 
@@ -3336,6 +3454,7 @@ AssignPartitions__IdentifyExistingPartitions () {
             if ! AssignPartitions_InferPartition \
                 --system_mapping_ $system_mapping_ \
                 --partition $partition \
+                --yes_to_all_ $yes_to_all_ \
                 --storage_tree_ $storage_tree_ \
                 --system_data_ $system_data_ \
                 --return_matched_partnum_ matched_partnum
@@ -3376,6 +3495,7 @@ AssignPartitions_InferPartition () {
             system_mapping_:    \
             storage_tree_:      \
             system_data_:       \
+            yes_to_all_:        \
             partition:          \
             return_matched_partnum_:  )
         . <(active $partition)
@@ -3398,14 +3518,30 @@ AssignPartitions_InferPartition () {
                 previously_matched=(${${(Pk)${:-${system_data_}[(I)$drive*,matched]}#$drive}%%,*})
                 matched=(${${(k)candidates[(R)${(L)value}]#$drive}%%,*})
                 matched=(${(M)matched:|previously_matched})
-                (( ${#matched} == 1 )) && {
-                eval ${system_data_}'[$drive$matched,matched]="matched $partition by $field";'
-                eval $return_matched_partnum_'=$matched'
-                reportInferred "matched partition tagged with
-                --${active[keep]+keep}${active[replace]+replace} to
-                $active[drive,devpath]$matched by $field value ($active[$field])"
-                return 0
-                } || :
+                if (( ${#matched} == 1 ))
+                then
+                    eval ${system_data_}'[$drive$matched,matched]="matched $partition by $field";'
+                    eval $return_matched_partnum_'=$matched'
+                    reportInferred "matched partition tagged with
+                    --${active[keep]+keep}${active[replace]+replace} to
+                    $active[drive,devpath]$matched by $field value ($active[$field])"
+                    return 0
+                # else if there is more than one match, we assign it here
+                # with a warning that this is sloppy
+                elif (( ${#matched} > 1 )) && ${(P)yes_to_all_:-false}
+                then
+                    eval ${system_data_}'[$drive$matched[1],matched]="matched $partition by $field";'
+                    eval $return_matched_partnum_'=$matched[1]'
+                    warn "MULTIPLE MATCH: matched partition
+                    tagged with --${active[keep]+keep}${active[replace]+replace}
+                    to $active[drive,devpath]$matched[1] by $field value
+                    ($active[$field]). This was the FIRST of multiple matching
+                    existing partitions and MAY NOT BE THE PARTITION YOU WANTED.
+                    Please review results carefully or run again without
+                    --${(L)yes_to_all}."
+                    return 0
+                    
+                fi
             fi
         done
         # got here without matching
@@ -3463,7 +3599,23 @@ AssignPartitions_QueryForPartition () {
     all_partitions=(${(ko)candidates[(R)part]%,type})
     previously_matched=(${(Pk)${:-${system_data_}[(I)$drive*,matched]}%,matched})
     available_partitions=(${(M)all_partitions:|previously_matched})
-    if [[ -n ${available_partitions} ]]
+
+    if (( ${#available_partitions} == 1 )) && ${(P)yes_to_all_:-false}
+    then
+        typeset auto_pn=${available_partitions[1]#$drive}
+        warn "Automatically selected partition $drive$auto_pn for partition
+        tagged with --${active[keep]+keep}${active[replace]+replace}
+        as it was the only available partition on drive $drive and the
+        --${(L)yes_to_all_} option was set. THIS MAY NOT BE WHAT YOU INTENDED."
+        eval $return_matched_partnum_'=$auto_pn'
+        return 0
+    elif (( ${#available_partitions} > 1 )) && ${(P)yes_to_all_:-false}
+    then
+        fail "Multiple partitions are available for assignment to the
+        partition tagged with --${active[keep]+keep}${active[replace]+replace}
+        but the --${(L)yes_to_all_} option is set so no interactive query will
+        be run. Rerun without this option or change your template."
+    elif [[ -n ${available_partitions} ]]
     then
         typeset eraser
         eraser="${:-${(l.$COLUMNS...):-}${(pl.$COLUMNS..\b.):-}}"
@@ -4005,7 +4157,7 @@ __Usage () {
     miniUsage () {
         print "\\n  usage: $SCRIPTNAME [templatename]" 1>&2
         print 1>&2
-        typeset -A allopts
+        typeset -A minimal_opts
         minimal_opts=(
         ${(kv)OPTS_BOOL}
         ${(kv)OPTS_ARGS}
@@ -4016,6 +4168,7 @@ __Usage () {
 
         typeset -a optarrays
         optarrays=(${OPTARRAYS:#${~advanced:-*_ALT*}})
+        typeset case
         for optset in $optarrays
         do
             [[ $optset =~ _ALT ]] && case=U || case=L
@@ -4170,6 +4323,27 @@ __Usage () {
     }
 
 }
+__ListTemplates () {
+    print "\nReading template files from $SCRIPTROOT/templates\n" 1>&2
+    print -l -- $SCRIPTROOT/templates/***~(*README)(#q.:t) 1>&2
+    print 1>&2
+}
+__AlphaWarning () {
+    # If not me, or root, or on another system, warn unless
+    # user adds --alpha option
+
+    # me on dev machine
+    typeset DEVSTRING=es@skylla
+    
+    ${ALPHA:-false} || [[ -z ${${:-$USERNAME@$HOST}:#$DEVSTRING} ]] && return 0
+    __Usage --mini
+    warn "Hello, not me: this is hard core alpha code.
+          Please read the readme and maybe glance at the sgdisk manual
+          to understand the final script output. Then run $SCRIPTNAME
+          again with the '--alpha' or '-A' option to skip this warning.
+          Or just skip the reading and run it now, but be sensible."
+    exit 1
+}
 
 :<< \
 ------------------------------------------------------------------------------
@@ -4178,143 +4352,6 @@ __inferMissingElements subsidiary functions
 each of these assumes the scope of __inferMissingElements  and must be called
 from within it (i.e. there is no explicit parameter option passing on these)
 ------------------------------------------------------------------------------
-# NOTE - moved to assume/default
-# ----------------------------------------------------------------------------
-appendActiveInferred () {
-    . <(localopts index: array:)
-    array=${array:-STORAGE}
-    index=${index:-${ACTIVE[index]:-}}
-    field=inferred
-    typeset current=${(P)${:-${array}[$index,inferred]}:-}
-    typeset new="${current:-}${current:+; }${${=*}}"
-    reportInferred "$*"
-    eval $array'[$index,inferred]=$new'
-}
-insertParent () {
-    . <(localopts array: index: type:)
-    array=${array:-STORAGE} # be good, though, and use option
-    index=${index:-${ACTIVE[index]:-}}
-    [[ -z ${type:-} ]] && fail "type missing in call to $0"
-    insertGapIndentSingleBranch \
-        --array $array --insertion_point $index 
-    eval $array'[$index,type]=$type'
-    eval $array'[$index,auto]=""'
-}
-insertSibling () {
-    . <(localopts array: index: type:)
-    array=${array:-STORAGE} # be good, though, and use option
-    index=${index:-${ACTIVE[index]:-}}
-    [[ -z ${type:-} ]] && fail "type missing in call to $0"
-    insertGapNoIndentSiblings \
-        --array $array --insertion_point $index 
-    eval $array'[$index,type]=$type'
-}
-insertMultiParent () {
-#    prior to insert parent at location
-#    get type of subsumed record
-#    scan for siblings of same type
-#    then make new parent
-#    move all records to under new parent
-}
-
-insertGapNoIndentSiblings () {
-    # given an insertion point such as 1,2 - list all siblings (1,1 1,2 1,3)
-    # and return the maximum value of the sibling index component (3 in this
-    # example) work backwards from the max value sibling to the insertion
-    # point sibling index (2 in this example), shuffling them down by
-    # incrementing their value finally leaving an open gap at the top.
-
-    . <(localopts input_array: insertion_point:)
-
-    input_array=${input_array:-STORAGE} # be good, though, and use option
-
-    typeset -a e
-    e=(
-    '${'
-    '${'
-    '${(MOn)'           '# Match part of %%[0-9]##,type (below) reverse order'
-    $input_array
-    '[(I)'              '# Search through keys of array'
-    '${insertion_point' '# ...for keys matching the insert point'
-    '//(#b)'            '# ...modify that insert point search string'
-    '([0-9]##)(#e)'     '# ...by replacing the last numeric index component'
-    '/[0-9]##}'         '# ...and making it a regex to match its siblings'
-    ',type]'            '# ...add a type string to match key record field'
-    '%%[0-9]##,type}'   '# final index,type value from results (M) above'
-    '%%,type}'          '# and trim the ,type part off'
-    '[1]}'              '# take first of (reverse sorted) sibling indexes'
-    )
-    ip_sib_id=${(M)insertion_point%%[0-9]##}
-    ip_head=${insertion_point%%[0-9]##}
-    sibscheck=${STORAGE[(I)ip_head,[0-9]##,type]}    
-    if [[ -n ${sibscheck} ]]
-    then
-        max_sib_id=${(ej..)e:#\#*} 
-        sibs=(${ip_head}{$max_sib_id..$ip_sib_id})
-        for sib_index in $sibs
-        do
-            new_sib_index=${sib_index//(#b)([0-9]##)(#e)/$(($match+1))}
-            for index in ${(P)${:-${input_array}[(I)$sib_index,*]}}
-            do
-                new_index=$new_sib_index${index##$sib_index}
-                eval $input_array'[$new_index]=${(P)${:-${input_array}[$index]}}'
-                unset "${input_array}[$index]"
-            done
-        done
-    else
-        # return if there were no siblings
-        return 0
-    fi
-}
-
-insertGapIndentSingleBranch () {
-
-    # inserts a gap at a specific (existing) record and indents the
-    # original record and children to be new children of new "gap" record
-    # (a new record can then be written at that gap point)
-
-    . <(localopts input_array: insertion_point:)
-
-    input_array=${input_array:-STORAGE} # be good, though, and use option
-
-    typeset -a new_index
-    typeset -a make_insertion_point_descendants
-
-    make_insertion_point_descendants=(
-    '${'
-    '${(On)'            '# make this reversed so as not to overwrite existing'
-    '${(Pk)'            '# reference to array, returning keys only'
-    '${:-'              '# dummy parameter expansion'
-    '${input_array}'    '# ...consisting of value (name) of input_array'
-    '[(I)'              '# ...and a search subscript'
-    '$insertion_point'  '# ...returning both self...'
-    ',*'                '# ...and children of the insertion_point'
-    ']}'
-    '//,/\\000'         '# swap out commas for null bytes for numerical sort'
-    '}'
-    '}'
-    '//\\000/,'         '# having sorted, replace the commas'
-    '}'
-    )
-    make_old_value=(
-    )
-
-    typeset index
-    for index in ${(ej..)make_insertion_point_descendants:#\#*}
-    do
-        # this newindex expansion fails inside the following assignment
-        # subscript. why? for now assigning to a paramt outside the subscript
-        # (specifically, the comment stripping fails in the subscript, even
-        # when not using the eval/input array reference)
-        # note - i assume this is because i need to add @ for array output
-        # as a parameter flag, TODO
-
-        new_index=${index//(#b)(#s)($insertion_point)(*)/$match[1],1$match[2]}
-        eval $input_array'[$new_index]=${(P)${:-${input_array}[$index]}}'
-        unset "${input_array}[$index]"
-    done
-}
-
 isSet () {
     # return true if value is set, even if non null
     # takes parameter name, not value, natch
@@ -4348,123 +4385,41 @@ ancestorOrSelfIsNoclobber () {
     done
     return 1
 }
-# IN USE
 activeIsNoclobber () {
     indexIsNoclobber --index ${active[index]}
 }
-# IN USE
 activeIsSet () {
     isSet "active[$1]"
 }
-# IN USE
 setActive () {
     setByIndex --index ${active[index]:-} --field $1 --value "${2:-}"
 }
-# IN USE
 unsetActive () {
     unsetByIndex --index ${active[index]:-} --field $1
 }
-# IN USE
 setByIndex () {
     . <(localopts index: field: array: value:)
     array=${array:-STORAGE}
     [[ -n ${index:-} && -n ${field:-} ]] || \
         fail "bad call to $0 with missing
-            ${index:-index}
-            ${field:-field}
-            "
+            ${index:-index} ${field:-field}"
     eval $array'[$index,$field]="${value:-}"'
 }
-# IN USE
 unsetByIndex () {
-    . <(localopts index: field: array: value:)
+    . <(localopts index: field: array:)
     array=${array:-STORAGE}
-    index=${index:-${ACTIVE[index]:-}}
+    index=${index:-${active[index]:-}}
     field=${field:-${1:-}}
-    value=${value:-${2:-}}
     unset "${array}[$index,$field]"
 }
-TODELETE_setParent () {
-    setByIndex --index ${active[parent,index]:-} --field $1 --value "${2:-}"
-}
-TODELETE_unsetParent () {
-    unsetByIndex --index ${active[parent,index]:-} --field $1
-}
-TODELETE_descendantIsSet () {
-    # return true if value is set, even if non null
-    # for any descendant record
-    #
-    # takes parameter name, not value, natch
-    # can
-    . <(localopts index: field: array:)
-    array=${array:-STORAGE}
-    index=${index:-${ACTIVE[index]:-}}
-    field=${field:-${1:-}}
-    [[ -n ${(P)${:-${array}[(I)$index,*,$field]}} ]]
-}
-
-TODELETE_descendantGetMatch () {
-    # get first available value for given field, index
-    # --key option returns key instead of value
-    # from descendants
-    . <(localopts index: field: array: key)
-    array=${array:-STORAGE}
-    index=${index:-${ACTIVE[index]:-}}
-    field=${field:-${1:-}}
-    # we could just take the first match from the (I) search but
-    # better to sort properly
-    first_match=${${${(n)${(P)${:-${array}[(I)$index,*,$field]}//,/\\000}}//\\000/,}[1]:-}
-    [[ -n $first_match ]] && {
-    isSet key && print $first_match || print ${(P)${:-${array}[$first_match]}}
-    }
-}
-
-TODELETE_getPartitionAncestor () {
-    . <(localopts index: field: array:)
-    array=${array:-STORAGE}
-    index=${index:-${ACTIVE[index]:-}}
-    field=${field:-${1:-}}
-    index_components=(${(s:,:)index[1,-2]})
-    while [[ -n $index_components ]]
-    do
-        if [[ ${(P)${:-${array}[${(j:,:)index_components},type]}} \
-            == partition ]]
-        then
-            if [[ -n $field ]]
-            then
-                print ${(P)${:-${array}[${(j:,:)index_components},$field]}}
-            else
-                print ${(j:,:)index_components}
-            fi
-        fi
-        index_components[-1]=()
-    done
-}
-
-TODELETE_ancestorIsSet () {
-    # return true if value is set, even if non null
-    # for any ancestor record
-    . <(localopts index: field: array:)
-    array=${array:-STORAGE}
-    index=${index:-${ACTIVE[index]:-}}
-    field=${field:-${1:-}}
-    index_components=(${(s:,:)index[1,-2]})
-    while [[ -n $index_components ]]
-    do
-        isSet "${array}[${(j:,:)index_components},$field]" && return 0
-        index_components[-1]=()
-    done
-    return 1
-}
-
-# IN USE
 ancestorGetMatch () {
     # returns first ancestor index that matches required field
     # returns full index: 1,1,fieldname
     . <(localopts index: field: array:)
     array=${array:-STORAGE}
-    index=${index:-${ACTIVE[index]:-}}
+    index=${index:-${active[index]:-}}
     field=${field:-${1:-}}
+    typeset -a index_components
     index_components=(${(s:,:)index[1,-2]})
     while [[ -n $index_components ]]
     do
@@ -4474,20 +4429,16 @@ ancestorGetMatch () {
     done
     return 1
 }
-
-# IN USE
 getOtherSiblings () {
     # returns the list of siblings of the submitted index
     # exluding the index itself
     . <(localopts index: array:)
     array=${array:-STORAGE}
-    index=${index:-${1:-${ACTIVE[index]:-}}}
-    typeset -a ia; ia=($index) #index as array for pattern exclusion
+    index=${index:-${1:-${active[index]:-}}}
+    typeset -a ia; ia=($index) # index as array for pattern exclusion
     typeset pi=${${index%,[0-9]}:#$index} # parent index, 1,1->1 1->null
     print -- ${${(Pk)${:-${array}[(I)${pi:-}${pi:+,}[0-9]#,type]}%%,type}:|ia}
 }
-
-
 
 :<< \
 ------------------------------------------------------------------------------
@@ -4900,10 +4851,10 @@ reportInferred () {
     teelog --category inference --color cyan ${=*}
 }
 alert () {
-    teelog --category alert --color yellow ${=*}
+    teelog --category alert --color cyan ${=*}
 }
 warn () {
-    teelog --category warning --color red ${=*}
+    teelog --category warning --color yellow ${=*}
 }
 shrinkWrap () {
     # smartWraps argument but first collapses to words, losing semantic space
@@ -5087,11 +5038,7 @@ localopts () {
     ':+true}}}'                     '# set the value to true'
     ';'
     )
-    print 'eval '${(j..)e:#\#*} # unevaluated, joined 'e' with no '#' comments
-                                # (unevaluated here as it must be evaluated in
-                                # calling function to retain function-local
-                                # parameter scope
-
+    print 'eval '${(j..)e:#\#*}
 }
 debugCapture () {
     if [[ -n ${DEBUGLOG:-} ]]
@@ -5099,40 +5046,6 @@ debugCapture () {
         typeset -p $1 >> $DEBUGLOG
         print >> $DEBUGLOG
     fi
-}
-__ListTemplates () {
-    print "\nReading template files from $SCRIPTROOT/templates\n" 1>&2
-    print -l -- $SCRIPTROOT/templates/***~(*README)(#q.:t) 1>&2
-    print 1>&2
-}
-__AlphaWarning () {
-    # If not me, or root, or on another system, warn unless
-    # user adds --alpha option
-
-    # me on dev machine
-    typeset DEVSTRING=es@skylla
-    
-    ${ALPHA:-false} || [[ -z ${${:-$USERNAME@$HOST}:#$DEVSTRING} ]] && return 0
-    __Usage --mini
-    warn "Hello, not me: this is hard core alpha code.
-          Please read the readme and maybe glance at the sgdisk manual
-          to understand the final script output. Then run $SCRIPTNAME
-          again with the '--alpha' or '-A' option to skip this warning.
-          Or just skip the reading and run it now, but be sensible."
-    exit 1
-}
-
-:<< \
-------------------------------------------------------------------------------
-TRAPS
-------------------------------------------------------------------------------
-track () {
-    typeset -ag ROLLCALL; ROLLCALL+=($1)
-    ${QUIET:-false} || {
-    print -n ${COLOR[cyan]:-} 1>&2
-    print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
-    print ${COLOR[default]:-} 1>&2
-    eval $@
 }
 
 # vim: set filetype=sh : 
