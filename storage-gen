@@ -842,9 +842,7 @@ __MAIN () {
         --infer_off_option_     INFEROFF
 
     # -----------------------------------------------------------------
-    # unless we want more verbose output in the tree display
-    # strip out some of the extra metadata here (notes, etc.)
-    # TODO: could move this into the tree print function?
+    # remove extraneous content from records, 
 
     execute __ScrubStructures                 \
         --storage_array_        STORAGE     \
@@ -859,15 +857,12 @@ __MAIN () {
     # partition paths/partnums, then it's good to know before
     # the user wastes time selecting drives, etc.
 
-    () {
-    #return 0;
     execute __ValidateStructures              \
         --children_array_       CHILDREN    \
         --required_array_       REQUIRED    \
         --siblings_array_       SIBLINGS    \
         --storage_array_        STORAGE     \
         --valid_array_          VALID
-}
 
     # -----------------------------------------------------------------
     # assign drive paths (e.g. /dev/sda, /dev/sdb)
@@ -878,24 +873,9 @@ __MAIN () {
     #      existing template values)
     #   2. From template
     #   3. Guess or Query
-    #       - From best guess if --guess option is set
+    #       - From best guess if --yes option is set
     #         (e.g. take first available unmounted internal drive)
-    #       - Else if no --guess option then from interactive query
-
-    # TODO: this can still take the drives array (--drives) and
-    # can override (it isn't right now, I don't think). the override
-    # function needs to be written and it needs to override for 
-    # the case of selection of a new drive (or am I doing that already?)
-    # -- it is essentially the same thing, picking a new drive if the
-    # template drive is invalid, and then rewriting the drive paths,
-    # or overriding with a drive from the --drives option. I think the
-    # --drives option should ALWAYS be respected. It's a club, and
-    # the user is hammering the point home: "I want these drives"
-    # barring a --replace or --keep partition that is missing a
-    # partnum, they should be used regardless.
-
-    # of course I could just write the new drives regardless of
-    # anything else, and let the validators sort it out
+    #       - Else if no --yes option then from interactive query
 
     execute __AssignDrives                  \
             --storage_tree_     STORAGE     \
@@ -911,26 +891,10 @@ __MAIN () {
             --yes_to_all_       YES         \
             --skip_system_data_ SKIP
 
-    execute __printTree                       \
-        --input_array           STORAGE     \
-        --tree_option           TREE        \
-        --input_filename        INPUTFILE   \
-        --input_filepath        SOURCEFILE
-    exit
-
     # -----------------------------------------------------------------
-    # validate that the results of the partition processing
-    # (no missing devpaths, partnums, they match, etc.)
-    # if no --just option, then make sure they exist
-
-    execute __validatePartitions              \
-        --drives_array          DRIVES      \
-        --input_array           STORAGE     \
-        --blockenv_array        SYSTEM      \
-        --ignore_env            SKIP
-
     # create the actual script output with partitioning,
     # filesystem creation, encryption and mounting commands
+
     execute __genPayload                      \
         --input_array           STORAGE     \
         --outputvar             PAYLOAD     \
@@ -942,9 +906,11 @@ __MAIN () {
         --warning_option        WARNOFF     \
         --ignore_env            SKIP
 
+    # -----------------------------------------------------------------
     # optionally print out a tree representation of the
     # final composed structure
-    execute __printTree                       \
+
+    execute __printTree                     \
         --input_array           STORAGE     \
         --tree_option           TREE        \
         --input_filename        INPUTFILE   \
@@ -1417,8 +1383,8 @@ __InitializeTrapsAndLog () {
         execute () {
             typeset -ag ROLLCALL; ROLLCALL+=($1)
             ${QUIET:-false} || {
-            print -n ${COLOR[cyan]:-} 1>&2
-            print -n "\\n...${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
+            print -n ${COLOR[white]:-} 1>&2
+            print -n "\\nEXECUTING:${(C)${${1#__}//(#m)[A-Z]/ ${(L)MATCH}}}..." 1>&2 }
             print ${COLOR[default]:-} 1>&2
             eval $@ }
     else
@@ -2387,14 +2353,14 @@ __FileConvertToArray () {
             # warn if anything is left over, but don't fail
             if [[ -n ${leftovers:-} ]]; then
 
-                alert "Unknown option/argument values for item type '$type'
+                warn "Unknown option/argument values for item type '$type'
                       encountered while reading storage definition file:
                       ${leftovers} This is non-critical."
 
                 # If the beginning of the leftovers match an option name
                 # suggest that the user forgot the -- prefix
                 if [[ "${leftovers:-}" =~ (^(${(j:|:)~opts}).*) ]]; then
-                    alert "Did you forget the -- prefix to specify the option
+                    warn "Did you forget the -- prefix to specify the option
                         name?\nIf so, try changing it to: --$*\n" 1>&2
                 fi
 
@@ -3536,13 +3502,14 @@ AssignPartitions_InferPartition () {
         typeset field
         for field in $fields
         do
-            if [[ -n ${active[$field]:-} ]]
+            typeset mapped_field=${(P)=${:-${system_mapping_}[$field]}}
+            if [[ -n ${active[$mapped_field]:-} ]]
             then
                 # match existing
                 typeset -A candidates; candidates=()
                 typeset -a previously_matched; previously_matched=()
                 typeset -a matched; matched=()
-                typeset value=$active[$field]
+                typeset value=$active[$mapped_field]
                 typeset drive=$active[drive,devpath]
                 candidates=(${(PkvL)${:-${system_data_}[(I)$drive*$field]}})
                 previously_matched=(${${(Pk)${:-${system_data_}[(I)$drive*,matched]}#$drive}%%,*})
@@ -3554,7 +3521,7 @@ AssignPartitions_InferPartition () {
                     eval $return_matched_partnum_'=$matched'
                     reportInferred "matched partition tagged with
                     --${active[keep]+keep}${active[replace]+replace} to
-                    $active[drive,devpath]$matched by $field value ($active[$field])"
+                    $active[drive,devpath]$matched by $field value ($active[$mapped_field])"
                     return 0
                 # else if there is more than one match, we assign it here
                 # with a warning that this is sloppy
@@ -3565,7 +3532,7 @@ AssignPartitions_InferPartition () {
                     warn "MULTIPLE MATCH: matched partition
                     tagged with --${active[keep]+keep}${active[replace]+replace}
                     to $active[drive,devpath]$matched[1] by $field value
-                    ($active[$field]). This was the FIRST of multiple matching
+                    ($active[$mapped_field]). This was the FIRST of multiple matching
                     existing partitions and MAY NOT BE THE PARTITION YOU WANTED.
                     Please review results carefully or run again without
                     --${(L)yes_to_all}."
@@ -4067,7 +4034,7 @@ __genPayload () {
 }
 __printPayload () {
     . <(localopts input_array: comments_option:)
-    payload="$(print -l -- ${(P)input_array})"
+    typeset payload="$(print -l -- ${(P)input_array})"
     print 1>&2
     ${(P)comments_option:-false} && { 
     print -l -- ${${(@f)payload}//(#s)\#([^!]|(#e))*/}
@@ -4489,6 +4456,8 @@ genPartitions () {
 
         . <(active $record)
 
+        typeset sgdisk_cmd sgdisk_msg
+
         if [[ ${active[type]} == drive ]]
         then
             
@@ -4527,6 +4496,8 @@ genPartitions () {
         if [[ ${active[type]} == partition ]] && activeIsSet replace
         then
 
+            typeset compiled_path=${active[drive,devpath]}${active[partnum]}
+
             ${(P)ignore_env:-false} && fail "Cannot process --replace
             partitions while --$ignore_env is set."
             if [[ -n ${SYSTEM:-} && -n ${SYSTEM[${active[devpath]},start]:-} ]]
@@ -4542,9 +4513,9 @@ genPartitions () {
             sgdisk_cmd="sgdisk"
             sgdisk_cmd+=" --delete=${active[partnum]}"
             sgdisk_cmd+=" --new=${active[partnum]}:"
-            sgdisk_cmd+="$SYSTEM[$active[devpath],start]}:"
-            sgdisk_cmd+="$SYSTEM[$active[devpath],end]} "
-            sgdisk_cmd+="${active[parent,devpath]}"
+            sgdisk_cmd+="$SYSTEM[$compiled_path,start]}:"
+            sgdisk_cmd+="$SYSTEM[$compiled_path,end]} "
+            sgdisk_cmd+="${active[drive,devpath]}"
             eval $outputvar'+=("$sgdisk_cmd $sgdisk_msg")'
         fi
 
@@ -4582,6 +4553,8 @@ genPartitions () {
             [[ -n "${active[label]:-}" ]] && \
                 sgdisk_cmd+=" --change-name=${active[partnum]}:${(q-)active[label]}"
 
+            sgdisk_cmd+=" ${active[drive,devpath]}"
+
             eval $outputvar'+=("$sgdisk_cmd $sgdisk_msg")'
 
         fi
@@ -4589,6 +4562,9 @@ genPartitions () {
     done
 
     # we processed one set of siblings, now walk down each branch
+    # this is almost certainly unecessary but retaining it here
+    # until I decide there are no edge cases with partitions that
+    # warrant it
     for record in $children; do
         $0 --start_at $record --ignore_env $ignore_env
     done
@@ -4621,6 +4597,7 @@ genEncryption () {
                 then
                     typeset -g PASSQUERY=true
                 fi
+                typeset m1 m2 ta r
                 m1=Passphrase m2=Confirmation ta='\\nTry again\\n' r="read -Ers "
                 eval $outputvar'+=(
                 "\\n# Query and confirm passphrase"
@@ -4633,17 +4610,19 @@ genEncryption () {
                 "# Saving a passphrase in a file is obviously insecure"
                 "pass=${(q)active[pass]}")'
             fi
+
+            typeset luksf lukso
             luksf="print -r \$pass | "
             luksf+="cryptsetup ${s::=${OPTIONS[luks,format]:-}}${s:+ }"
             luksf+="${s::=${active[luksformat]:-}}${s:+ }"
-            luksf+="luksFormat ${active[devpath]}"
+            luksf+="luksFormat $(getDevpath ${active[parent,index]})"
             lukso="print -r \$pass | "
             lukso+="cryptsetup open "
             lukso+="${s::=${OPTIONS[luks,open]:-}}${s:+ }"
             lukso+="${s::=${active[luksopen]:-}}${s:+ }"
             lukso+="${s::=${active[ssd]+${OPTIONS[luks,open,ssd]:-}}}${s:+ }"
-            lukso+="${active[devpath]} "
-            lukso+="${(q-)active[label]:-${active[devpath]//\//_}} "
+            lukso+="$(getDevpath ${active[parent,index]}) "
+            lukso+="${${:-$(getDevpath ${active[index]})}#/dev/mapper/} "
             ancestorOrSelfIsNoclobber --index $record \
                 || eval $outputvar'+=("\n# LUKS formatting" "$luksf")'
             eval $outputvar'+=("\n# LUKS open" "$lukso")'
@@ -4674,8 +4653,9 @@ genSwap () {
 
             sectionHeader swap
 
-            mkswap="mkswap "
-            swapon="swapon "
+            typeset mkswap="mkswap "
+            typeset swapon="swapon "
+            typeset msg1 msg2 cmd swapid
 
             if [[ -n ${active[label]:-} ]]
             then
@@ -4686,15 +4666,16 @@ genSwap () {
 
                 msg1="# Get swap uuid (add --label on swap to use instead)\n"
                 msg2=" # get swap uuid if no label"
-                cmd="swap_uuid=\"\$(lsblk -no UUID ${active[devpath]})\""
+                cmd="swap_uuid=\"\$(lsblk -no UUID $(getDevpath ${active[index]}))\""
                 eval $outputvar'+=( "$msg1$cmd$msg2" )'
                 swapid="-U \$swap_uuid"
 
             fi
 
+            typeset swapssd mkswap swapon
             swapssd+="${s::=${active[ssd]+${OPTIONS[swap,ssd]:-}}}${s:+ }"
-            mkswap+="$swapid ${active[devpath]}"
-            swapon+="$swapid $swapssd${active[devpath]}"
+            mkswap+="$swapid $(getDevpath ${active[index]})"
+            swapon+="$swapid $swapssd $(getDevpath ${active[index]})"
 
             ancestorOrSelfIsNoclobber --index $record \
                 || eval $outputvar'+=("$mkswap # make swap device")'
@@ -4725,9 +4706,8 @@ genFilesystem () {
         if [[ ${active[type]} == filesystem ]] \
             && ! ancestorOrSelfIsNoclobber --index $record
         then
-
             sectionHeader filesystem
-
+            typeset mkfscmd
             mkfscmd="mkfs.${f::=${active[fstype]}} "
             mkfscmd+="${s::=${(e)OPTIONS[mkfs]:-}}${s:+ }"
             mkfscmd+="${s::=${(e)OPTIONS[mkfs,$f]:-}}${s:+ }"
@@ -4736,7 +4716,7 @@ genFilesystem () {
             mkfscmd+="${s::=${(e)OPTIONS[mkfs,$f,ssd]:-}}${s:+ }"
             }
             mkfscmd+="${s::=${active[mkfsoptions]:-}}${s:+ }"
-            mkfscmd+="${active[devpath]}"
+            mkfscmd+="$(getDevpath ${active[index]})"
             eval $outputvar'+=(
                 "$mkfscmd  # make filesystem"
                 )'
@@ -4762,6 +4742,9 @@ genMounts () {
 
     sectionHeader mount
 
+    typeset mountpoint mountpath record
+    typeset -a mountopts
+
     for mountpoint in $ordered_mountpoints; do
 
         record=${(k)mountpoint_records[(r)$mountpoint]}
@@ -4784,7 +4767,7 @@ genMounts () {
             typeset -a mountcmd
             mountcmd=("mount")
             mountcmd+=("${(j:,:)${(u)=${(s:,:)mountopts}}}")
-            mountcmd+=("${active[devpath]} ${mountpath}")
+            mountcmd+=("$(getDevpath ${active[index]}) ${mountpath}")
             eval $outputvar'+=("$mountcmd")'
         else # subvolume
             eval $outputvar'+=(
@@ -4795,6 +4778,35 @@ genMounts () {
     done
 
 }
+getDevpath () {
+    . <(localopts index:)
+    # return the device path appropriate for a given storage type
+    index=${index:-$1}
+    [[ -n ${index:-} ]] || fail "$0 missing index argument"
+    . <(active $index)
+    if [[ $active[type] == drive ]]
+    then
+        print $active[devpath]
+    elif [[ $active[type] == partition && -n ${active[label]:-} ]]; then
+        print /dev/disk/by-partlabel/${active[label]// /\\\ }
+    elif [[ $active[type] == partition && -n ${active[uuid]:-} ]]; then
+        print /dev/disk/by-partuuid/${active[label]// /\\\ }
+    elif [[ $active[type] == partition ]]; then
+        print $active[drive,devpath]$active[partnum]
+    elif [[ $active[type] == encryption && -n ${active[label]:-} ]]; then
+        print /dev/mapper/${active[label]// /\\\ }
+    elif [[ $active[type] == encryption && -n ${active[parent,label]:-} ]]; then
+        print /dev/mapper/crypt_${active[parent,label]// /_}
+    elif [[ $active[type] == encryption ]]; then
+        typeset parent="$active[drive,devpath]$active[parent,partnum]"
+        print /dev/mapper/${parent//\//_}
+    elif [[ $active[type] == (filesystem|swap) ]]; then
+        $0 ${active[parent,index]}
+    else
+        fail "Unhandled storage item type in $0"
+    fi
+}
+
 :<< \
 ------------------------------------------------------------------------------
 miscellaneous utility functions
