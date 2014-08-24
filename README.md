@@ -446,7 +446,12 @@ values that it can read from the system such as `--code`, `--label`, `--size`.
 If it cannot locate a matching partition (or too many matches result) it will 
 prompt the user for selection of the correct entry (unless the `--yes` option 
 has been supplied on the command line which takes the first best option in all 
-interactive queries, or fails if too many options are present).
+interactive queries, or fails if too many options are present). 
+
+If you wish to preserve all existing partitions on a drive regardless of having 
+no `--keep` or `--replace` options in the template, simply add the `--keep` 
+option to the storage-gen command line and no drive formatting commands will be 
+output in the final script (and existing partitions will be respected).
 
 
 ## Command Line Options

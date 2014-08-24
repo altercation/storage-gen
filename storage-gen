@@ -451,6 +451,11 @@ result) it will prompt the user for selection of the correct entry (unless
 the `--yes` option has been supplied on the command line which takes the first
 best option in all interactive queries, or fails if too many options are
 present).
+
+If you wish to preserve all existing partitions on a drive regardless of having
+no `--keep` or `--replace` options in the template, simply add the `--keep`
+option to the storage-gen command line and no drive formatting commands will
+be output in the final script (and existing partitions will be respected).
 ------------------------------------------------------------------------------)
 
 :<< \
@@ -971,7 +976,7 @@ __MAIN () {
     # create the actual script output with partitioning,
     # filesystem creation, encryption and mounting commands
 
-    execute __genPayload                      \
+    execute __genPayload                    \
         --input_array           STORAGE     \
         --outputvar             PAYLOAD     \
         --sourcefile            SOURCEFILE  \
@@ -980,6 +985,7 @@ __MAIN () {
         --multipass             MULTIPASS   \
         --comments_option       COMPACT     \
         --warning_option        WARNOFF     \
+        --keep_option           KEEP        \
         --ignore_env            SKIP
 
     # -----------------------------------------------------------------
@@ -4043,7 +4049,7 @@ __printTree () {
 }
 __genPayload () {
 
-    . <(localopts input_array: outputvar: sourcefile: infilename: mountroot: multipass: comments_option: warning_option: ignore_env:)
+    . <(localopts input_array: outputvar: sourcefile: infilename: mountroot: multipass: comments_option: warning_option: ignore_env: keep_option:)
 
     # prepare arrays
     typeset -ag $outputvar
@@ -4108,7 +4114,7 @@ __genPayload () {
         fi
     }
 
-    genPartitions --ignore_env $ignore_env
+    genPartitions --ignore_env $ignore_env --keep_option $keep_option
     genEncryption --multipass $multipass
     genSwap
     genFilesystem
@@ -4531,7 +4537,7 @@ within it (i.e. there is no explicit parameter option passing on these)
 ------------------------------------------------------------------------------
 genPartitions () {
 
-    . <(localopts start_at: ignore_env:)
+    . <(localopts start_at: ignore_env: keep_option:)
 
     typeset -a children
     children=($(children --of "${start_at:-}"))
@@ -4548,7 +4554,8 @@ genPartitions () {
             sectionHeader partitions
 
             # is noclobber
-            if descendantOrSelfIsNoclobber --index $active[index]
+            if ${(P)keep_option:-false} || \
+               descendantOrSelfIsNoclobber --index $active[index]
             then
                 typeset ncvalues
                 ncvalues="${:-'--${^=NOCLOBBER[partition]}'}"
@@ -4556,6 +4563,7 @@ genPartitions () {
                 "\n\n# DRIVE - ${active[devpath]}\n$__"
                 "# DRIVE CONTENTS PRESERVED (no drive wipe performed) due to"
                 "# $ncvalues having been set on partition entries"
+                "# or the '\''--${(L)keep_option}'\'' option having been set on the command line."
                 )'
 
             # has no noclobber settings
