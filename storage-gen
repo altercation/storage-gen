@@ -3978,7 +3978,7 @@ __genPayload () {
     "#!/usr/bin/env zsh"
     "$__\n# Storage initialization commmands\n$__"
     "# turn off comments in this output with the following option"
-    "# \"$SCRIPTNAME --${(L)comments_option}\"\n$__\n#"
+    "# \"$SCRIPTNAME --${(L)comments_option}\" or \"$SCRIPTNAME -${(U)comments_option:0:1}\"\n$__\n#"
     "# SOURCE FILE - ${(P)infilename}"
     "# read from: ${(P)sourcefile}\n$__"
     ${:-\# }${(f)^"$(< ${(P)sourcefile})"}
@@ -3992,15 +3992,16 @@ __genPayload () {
 
     (${(P)comments_option:-false} || ${(P)warning_option:-false}) || {
     typeset warn
-    warn="WARNING - hide this with "
+    warn="WARNING\n# hide this with "
     warn+="\"$SCRIPTNAME --${(L)warning_option}\" or \"$SCRIPTNAME -${(U)warning_option:0:1}\""
+    warn+="\n#             or \"$SCRIPTNAME --${(L)comments_option}\" or \"$SCRIPTNAME -${(U)comments_option:0:1}\""
     ${(P)comments_option:-false} && {
     eval $outputvar'+=(":\n: $warn")' }
     eval $outputvar'+=(
     "\n\n$__\n# $warn\n$__"
     "cat 1>&2 << \\\\\\"
     "--WARNING--"
-    "WARNING:\nReview this script prior to running it."
+    "WARNING: Review this script prior to running it."
     "Unrecoverable changes may be made to this system.\n"
     "Do you wish to continue? (y/n)\n"
     "--WARNING--"
