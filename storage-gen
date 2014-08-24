@@ -917,6 +917,7 @@ __MAIN () {
     execute __printTree                     \
         --input_array           STORAGE     \
         --tree_option           TREE        \
+        --quiet_option          QUIET       \
         --input_filename        INPUTFILE   \
         --input_filepath        SOURCEFILE
 
@@ -1486,6 +1487,7 @@ __InitializeTrapsAndLog () {
                 __printTree \
                     --input_array       '$storage_tree_' \
                     --tree_option       TREE \
+                    --quiet_option      QUIET \
                     --input_filename    '$input_filename_' \
                     --input_filepath    '$input_filepath_'
             fi
@@ -3792,6 +3794,7 @@ __printTree () {
             leader:         \
             input_filename: \
             input_filepath: \
+            quiet_option:   \
             tree_option:    )
 
     ${(P)tree_option:-false} || return 0
@@ -3826,6 +3829,7 @@ __printTree () {
     )
 
     # print intro
+    ${(P)quiet_option:-false} || {
     print
     print "${_i}${COLOR[white]:-}Source filename: ${(P)input_filename}"
     print "${_i}Source filepath: ${(P)input_filepath}"
@@ -3837,6 +3841,7 @@ __printTree () {
         print "${_i}Partitions in ${COLOR[yellow]}YELLOW${COLOR[default]} are to be retained due to --keep"
         print "${_i}Partitions in ${COLOR[green]}GREEN${COLOR[default]} are to be newly created\n"
     fi
+    }
 
     buildTree () {
 
@@ -4888,10 +4893,11 @@ genMounts () {
                 fi
             fi
             [[ -n ${(M)getopts_record:#$active[fstype]} ]] && {
-                mountopts+="\$opts_$active[fstype]" }
+                mountopts+="\$opts_$active[fstype]"
+                [[ -n ${mountopts:-} ]] && mountcmd+=("-o $mountopts")
+                }
             if [[ ${active[parent,type]} == partition \
                && -n ${active[parent,label]:-} ]]
-            [[ -n ${mountopts:-} ]] && mountcmd+=("-o $mountopts")
             then
                 mountcmd+=("-L $active[parent,label] ${mountpath}")
             else
