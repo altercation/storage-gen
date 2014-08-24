@@ -405,6 +405,10 @@ simply including that on the command line:
 
     storage-gen multi-drives --skip --drives /dev/sdb,/dev/sdc 
 
+(if you left out the `--skip` option above the drives would be selected and the 
+script would then use the actual specified drives on the system to further 
+identify partitions, etc.) 
+
 ### Let the script prompt you 
 
 Finally, if the script cannot figure out what you want to do, it will prompt 
