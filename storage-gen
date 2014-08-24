@@ -3990,7 +3990,7 @@ __genPayload () {
         eval $outputvar'+=( "#\n$__" ${(f)^"$(reportLog)"})'
     fi
 
-    ${(P)warning_option:-false} || {
+    (${(P)comments_option:-false} || ${(P)warning_option:-false}) || {
     typeset warn
     warn="WARNING - hide this with "
     warn+="\"$SCRIPTNAME --${(L)warning_option}\" or \"$SCRIPTNAME -${(U)warning_option:0:1}\""
