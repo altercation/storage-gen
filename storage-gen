@@ -4369,7 +4369,7 @@ descendantOrSelfIsNoclobber () {
     typeset ncfield
     for ncfield in ${=NOCLOBBER[partition]};
     do
-        eval '[[ -n ${+'$array'[(I)$index,*$ncfield]} ]] && return 0'
+        eval '[[ -n ${'$array'[(I)'$index'*'$ncfield']} ]] && return 0'
     done
     return 1
 }
@@ -4470,7 +4470,7 @@ genPartitions () {
             sectionHeader partitions
 
             # is noclobber
-            if descendantOrSelfIsNoclobber --index $record
+            if descendantOrSelfIsNoclobber --index $active[index]
             then
                 typeset ncvalues
                 ncvalues="${:-'--${^=NOCLOBBER[partition]}'}"
