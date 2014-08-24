@@ -385,67 +385,6 @@ be best rewritten in another language.
 Currently, storage-gen is designed for use on UEFI systems and targets the 
 creation of GPT partitioned disks. 
 
-### Usage Example: 
-
-Suppose you want to erase your drive, create a new btrfs file system for your 
-system root and also create a new, separate filesystem for your home directory. 
-A storage-gen definition file for this might be: 
-
-    filesystem --fstype btrfs --size 30G --mountpoint / 
-    filesystem --mountpoint /home 
-
-If this file was named "mystorage" you could then run storage-gen on it 
-
-    # storage-gen mystorage 
-
-And after being asked which of the available drives you wanted to use, the 
-following script would be output 
-
-    #!/usr/bin/env zsh 
-    sgdisk --zap-all /dev/sda # erase everything! 
-    sgdisk --clear /dev/sda   # create new gpt structure 
-    sgdisk --new=0:0:+30G     # new partition 
-    sgdisk --largest-new=0    # new partition, fills remainder 
-    mkfs.ext4 /dev/sda1       # make a filesystem 
-    mkfs.ext4 /dev/sda2       # make a filesystem 
-    mount defaults,x-mount.mkdir/dev/sda1 /mnt      # mount filesystem 
-    mount defaults,x-mount.mkdir/dev/sda2 /mnt/home # mount filesystem 
-
-You could also ask to see a tree style output of the results. This is useful 
-while writing storage-definition files so you can confirm the results (for 
-example, with an editor in one terminal or virtual console and the tree view in 
-another): 
-
-    # storage-gen --tree mystorage 
-
-Or the same without messages-- 
-
-    # storage-gen --tree --quiet mystorage 
-
-Resulting in the following for a drive selection of /dev/sda 
-
-    drive devpath=/dev/sda 
-    │   
-    ├── partition size=30G devpath=/dev/sda1 
-    │   │   
-    │   └── filesystem fstype=btrfs mountpoint=/ 
-    │   
-    └── partition size=max devpath=/dev/sda2 
-        │   
-        └── filesystem fstype=ext4 mountpoint=/home 
-
-If we wanted do do the same, but use a value of /dev/sdb, without choosing it 
-manually we could either insert it into our file: 
-
-    drive --devpath=/dev/sdb 
-    filesystem --size 30G --mountpoint / 
-    filesystem --mountpoint /home 
-
-or we could append it to the command line using the `--drives` option which 
-takes a comma separated list of drives: 
-
-    storage-gen --drives /dev/sdb  mystorage 
-
 ### Command Examples: 
 
 Note that several of these examples use the example storage template named 
@@ -454,7 +393,7 @@ Note that several of these examples use the example storage template named
 
 **Examples:** Ways to reference the storage file - normal script output 
 
-    storage-gen filename-from-storage-subdirectory 
+    storage-gen filename-from-templates-subdirectory 
     storage-gen ./relative/path/to/storage-definition-filename 
     storage-gen /full/absolute/path/to/storage-definition-filename 
     storage-gen http://url/of/file/to/download 
@@ -468,7 +407,7 @@ Note that several of these examples use the example storage template named
 This is useful for split screen editing, with the storage definition file open 
 in an editor on one side and this live view in another. 
 
-    watch -cn1 `storage-gen --tree new-typical` 
+    watch -cn1 `storage-gen --quiet --tree new-typical` 
 
 **Example:** Save script file and show output together 
 
@@ -478,8 +417,8 @@ or
 
     storage-gen new-typical --output my-storage-script 
 
-See the $SCRIPTROOT/storage subdirectory for a list of prepared storage 
-definition files and further details on format. 
+See the storage-gen/templates subdirectory for a list of prepared storage 
+template files. 
 
 ## Existing Partitions 
 
@@ -487,7 +426,27 @@ You may wish to keep an existing partition (and whatever it contains) as it is.
 For example, you might have an existing filesystem that you want to mount under 
 /home. To do this, just add the --keep option 
 
-    filesystem --mountpoint /home --keep
+    filesystem --mountpoint /home --keep 
+
+or (equivalent) 
+
+    partition --keep --label MyHome 
+        filesystem --mountpoint /home 
+
+To replace an existing partition with a new, equally sized/numbered partition, 
+use the --replace option in the template: 
+
+    partition --replace --label ExistingLabel 
+        filesystem --mountpoint /home 
+
+In both the above cases, if the script finds a partition with the partition 
+label "MyHome" or "ExistingLabel", it automatically selects that partition for 
+replacement. Storage-gen will try to match existing partitions based on field 
+values that it can read from the system such as `--code`, `--label`, `--size`. 
+If it cannot locate a matching partition (or too many matches result) it will 
+prompt the user for selection of the correct entry (unless the `--yes` option 
+has been supplied on the command line which takes the first best option in all 
+interactive queries, or fails if too many options are present).
 
 
 ## Command Line Options
