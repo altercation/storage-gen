@@ -58,19 +58,19 @@ this
 
 ### Creating this structure automatically 
 
-    [drive] devpath=/dev/sdb 
-       │   
-       ├──[partition] size=20G devpath=/dev/sdb1 partnum=1 
-       │  │   
-       │  └──filesystem fstype=ext4 devpath=/dev/sdb1 mountpoint=/ 
-       │   
-       ├──[partition] size=ram devpath=/dev/sdb2 partnum=2 
-       │  │   
-       │  └──swap devpath=/dev/sdb2 
-       │   
-       └──[partition] size=max devpath=/dev/sdb3 partnum=3 
-          │   
-          └──filesystem fstype=btrfs mountpoint=/home devpath=/dev/sdb3 
+    [drive] devpath=/dev/sda 
+       │   
+       ├──[partition] size=20G partnum=1 
+       │  │   
+       │  └──filesystem fstype=ext4 mountpoint=/ 
+       │   
+       ├──[partition] size=ram partnum=2 
+       │  │   
+       │  └──swap  
+       │   
+       └──[partition] size=max partnum=3 
+          │   
+          └──filesystem fstype=ext4 mountpoint=/home 
 
 ### While this command (without --tree) 
 
@@ -84,34 +84,39 @@ gives you the important opportunity to review the output and make changes to
 either the template or the raw script output itself. 
 
     #!/usr/bin/env zsh 
-
     # ---------------------------------------------------------- 
-    # storage initialization commmands 
+    # Storage initialization commmands 
     # ---------------------------------------------------------- 
 
     # Drive formatting and partition structures 
     # ---------------------------------------------------------- 
-    sgdisk --new=1:0:+20G  # create fixed size partition 
-    sgdisk --new=2:0:16G   # create partition matching system ram size 
-    sgdisk --largest-new=3 # create partition filling remaining space 
+    backupdir=$(mktemp --tmpdir=/tmp -d part-backup-XXX) 
+    backupfile="$backupdir/_dev_sda_backup" 
+    sgdisk --backup=$backupdir # backup existing partition table 
+    print "Partition table backed up to $backupdir" 1>&2 
+    sgdisk --zap-all /dev/sda # nuke from orbit, just to be sure 
+    sgdisk --mbrtogpt --clear /dev/sda # create new gpt structure 
+    sgdisk --new=1:0:+20G /dev/sda # create fixed size partition 
+    sgdisk --new=2:0:16G /dev/sda # create partition matching system ram size 
+    sgdisk --largest-new=3 /dev/sda # create partition filling remaining space 
 
     # Swap configuration 
     # ---------------------------------------------------------- 
     # Get swap uuid (add --label on swap to use instead) 
-    swap_uuid="$(lsblk -no UUID /dev/sdb2)" # no label, get uuid 
-    mkswap -U $swap_uuid /dev/sdb2          # make swap device 
-    swapon -U $swap_uuid /dev/sdb2          # activate swap device 
+    swap_uuid="$(lsblk -no UUID /dev/sda2)" # get swap uuid if no label 
+    mkswap -U $swap_uuid /dev/sda2 # make swap device 
+    swapon -U $swap_uuid  /dev/sda2 # activate swap device 
 
     # Filesystem creation 
     # ---------------------------------------------------------- 
-    mkfs.ext4 /dev/sdb1           # make filesystem 
-    mkfs.btrfs --force /dev/sdb3  # make filesystem 
+    mkfs.ext4 /dev/sda1  # make filesystem 
+    mkfs.ext4 /dev/sda3  # make filesystem 
 
-    # Mount filesystems & create subvolumes 
+    # Mount filesystems and subvolumes 
     # ---------------------------------------------------------- 
-    mount /dev/sdb1 /mnt 
-    mount defaults,x-mount.mkdir,compress=lzo,space_cache,autodefrag, 
-        inode_cache /dev/sdb3 /mnt/home 
+    opts_ext4=defaults,x-mount.mkdir 
+    mount -o $opts_ext4 /dev/sda1 /mnt 
+    mount -o $opts_ext4 /dev/sda3 /mnt/home 
 
 (some comments removed... remove them all with the `--compact` command line 
 option) 
@@ -558,16 +563,15 @@ template to use. This option is merely a more explicit alternative to that.
 
 ### Storage Definition File - Valid Item Options (Fields)
 
-These are the options (fields) that are acceptable for each of the 
-storage types. The types listed are the only valid types (drive, 
-partition, etc.).
+These are the options (fields) that are acceptable for each of the storage types. 
+The types listed are the only valid types (drive, partition, etc.).
 * `drive:` devpath ssd
 * `partition:` bootable code size partnum new keep replace label uuid
 * `logical:` Not yet implemented
 * `encryption:` luksformat luksopen pass label encrypt
 * `swap:` label
 * `filesystem:` fstype mountpoint label
-* `subvolume:` mountpoint
+* `subvolume:` mountpoint label
 
 ### Storage Definition File - Field Descriptions
 
