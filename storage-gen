@@ -2422,7 +2422,7 @@ __InflateStructure () {
         index=${index:-${active[index]:-}}
         [[ -z ${type:-} ]] && fail "type missing in call to $0"
         InflateStructure__InsertGapIndentSingleBranch \
-            --array $array --insertion_point $index 
+            --input_array $array --insertion_point $index 
         eval $array'[$index,type]=$type'
         eval $array'[$index,auto]=""'
     }
@@ -2432,7 +2432,7 @@ __InflateStructure () {
         index=${index:-${active[index]:-}}
         [[ -z ${type:-} ]] && fail "type missing in call to $0"
         InflateStructure__InsertGapNoIndentSiblings \
-            --array $array --insertion_point $index 
+            --input_array $array --insertion_point $index 
         eval $array'[$index,type]=$type'
     }
     isTypeValidForLineage () {
@@ -3697,7 +3697,7 @@ AssignPartitions__EarmarkSystemPartitions () {
 }
 AssignPartitions__EnumerateRemainingPartitions () {
     . <(localopts storage_tree_: on_drive: earmarked_:)
-    typeset -i seq=${${(@PO)${:-${earmarked_}}}[1]}
+    typeset -i seq=${${(@PO)${:-${earmarked_}}}[1]:-0}
     typeset partition
     # non max value
     for partition in $(children --of $on_drive)
@@ -4012,6 +4012,7 @@ __genPayload () {
     partitions  "# Drive formatting and partition structures"
     encryption  "# Encryption"
     filesystem  "# Filesystem creation"
+    subvolume   "# Subvolume creation"
     swap        "# Swap configuration"
     logical     "# Logical volume preparation"
     mount       "# Mount filesystems & create subvolumes"
@@ -4029,6 +4030,7 @@ __genPayload () {
     genEncryption --multipass $multipass
     genSwap
     genFilesystem
+    genSubvolume
     genMounts
 
 }
@@ -4728,6 +4730,102 @@ genFilesystem () {
     for record in $children; do
         $0 --start_at $record
     done
+
+}
+genSubvolume () {
+
+    . <(localopts script_temp_: start_at: )
+
+    typeset script_temp=${(P)script_temp_:-$SCRIPTTEMP}
+
+    typeset -a children
+    children=($(children --of "${start_at:-}"))
+
+    typeset -g genSubvolume_runcheck=${genSubvolume_runcheck:-false}
+
+    for record in $children
+    do
+
+        . <(active $record)
+
+        # TODO: if subvolume has mountpoint of / then it needs a label
+        # of "root"
+
+        # TODO: we could just make all the subvolumes now and be
+        # done with it
+
+        typeset -a btrfscmd; btrfscmd=()
+
+        if [[ ${active[type]} == subvolume ]] \
+            && ! ancestorOrSelfIsNoclobber --index $record \
+            && [[ -n ${active[mountpoint]:-} ]]
+        then
+            if [[ ${active[mountpoint]:0:1} != "/" ]]
+            then
+                fail "Subvolume has non absolute path mountpoint
+                      (${active[mountpoint]})."
+            fi
+
+            sectionHeader subvolume
+
+            if [[ ${active[parent,type]} == filesystem ]]
+            then
+                typeset mntpnt
+                mntpnt=${active[mountpoint]#${active[parent,mountpoint]:-/}}
+                [[ -n ${mntpnt:-} ]] || mntpnt=root
+                if ! $genSubvolume_runcheck
+                then
+                    genSubvolume_runcheck=true
+                    btrfscmd+=(
+                    '[[ -d ${tmpmnt::=/tmp/btrfs} ]] || mkdir -p $tmpmnt'
+                    '\nmount -t btrfs '$(getDevpath $active[parent,index])' $tmpmnt'
+                    )
+                fi
+                btrfscmd+=(
+                'btrfs subvolume create $tmpmnt/'$mntpnt
+                )
+            fi
+#
+#            if [[ ${active[parent]} == filesystem \
+#               && -n ${active[parent,mountpoint]} \
+#               && -n ${active[mountpoint]} ]] \
+#               || \
+#               [[ ${active[parent]} == subvolume \
+#               && -z ${active[parent,mountpoint]} \
+#               && -n ${active[mountpoint]} ]]
+#            then
+#                # subvolume child of filesystem with normal mountpoint
+#                # or a child of another subvolume
+#                # so we should make the subvolume after filesystem has been
+#                # mounted
+#            elif [[${active[parent]} == filesystem \
+#               && -z ${active[parent,mountpoint]} \
+#               && -n ${active[mountpoint]} ]]
+#            then
+#                # subvolume child of filesystem without a mountpoint
+#                # and has a mountpoint, so we need to mount filesystem
+#                # and create the subvolume, then unmount so we can
+#                # later remount subvolume directly
+#                mount parent filesystem on temp mountpoint
+#                make subvolume
+#                unmount
+#            fi
+        fi
+
+    done
+
+    eval $outputvar'+=($btrfscmd)'
+
+
+    # we processed one set of siblings, now walk down each branch
+    for record in $children; do
+        $0 --start_at $record
+    done
+
+    if $genSubvolume_runcheck
+    then
+       eval $outputvar'+=("\numount \$tmpmnt")'
+    fi
 
 }
 genMounts () {
