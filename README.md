@@ -121,6 +121,102 @@ either the template or the raw script output itself.
 (some comments removed... remove them all with the `--compact` command line 
 option) 
 
+## Simplifies complex configuration 
+
+Adding encryption can be done implicitly on any acceptable entry 
+
+    filesystem --size 20G --mountpoint / 
+    filesystem --mountpoint /home --encrypt 
+    swap 
+
+Or can be added explicitly (or mixed, with --encrypt on swap and encryption as 
+a parent of filesystem in this example) 
+
+    filesystem --size 20G --mountpoint / 
+    encryption 
+        filesystem --mountpoint /home 
+    swap --encrypt 
+
+Creating the following structure (and appropriate LUKS config in the script) 
+
+    [drive] devpath=/dev/sda 
+       │   
+       ├──[partition] size=20G partnum=1 
+       │  │   
+       │  └──filesystem fstype=ext4 mountpoint=/ 
+       │   
+       ├──[partition] size=ram partnum=2 
+       │  │   
+       │  └──[encryption]  
+       │     │   
+       │     └──swap  
+       │   
+       └──[partition] size=max partnum=3 
+          │   
+          └──encryption  
+             │   
+             └──filesystem fstype=ext4 mountpoint=/home 
+
+## Get crazy 
+
+Here is another common template example. This preserves an existing EFI 
+partition, (for example on an existing system or in a dual boot configuration) 
+mounting it under /boot while creating a new encrypted root and home subvolume 
+under a btrfs filesystem which is, itself, not mounted. Note that since there 
+is an existing partition that will be preserved, no drive erasure takes place. 
+For this example, we look at the script output. 
+
+You can run this command now and use the same simulated machine environment 
+using the following command (run from the root of the storage-gen script 
+directory, or adjusting the --sourcedebug path to locate the correct file). 
+
+    storage-gen keep-efi \ 
+        --sourcedebug extras/environments/surfacepro3.debug \ 
+        --yes \ 
+        --warnoff 
+
+With the following output resulting 
+
+    #!/usr/bin/env zsh 
+    # ---------------------------------------------------------- 
+    # Storage initialization commmands 
+    # ---------------------------------------------------------- 
+
+    # Drive formatting and partition structures 
+    # ---------------------------------------------------------- 
+    sgdisk --largest-new=6 /dev/sda # create partition filling remaining space 
+
+    # Encryption 
+    # ---------------------------------------------------------- 
+    # Query and confirm passphrase 
+    while ! ${${${pass::=$( 
+    read -Ers "?Passphrase: ")}:#$( 
+    read -Ers "?Confirmation: ")}:+false}; 
+    do print "Try again"; done 
+
+    print -r $pass | cryptsetup luksFormat /dev/sda6 
+    print -r $pass | cryptsetup open /dev/sda6 _dev_sda6  
+
+    # Filesystem creation 
+    # ---------------------------------------------------------- 
+    mkfs.btrfs --force /dev/mapper/_dev_sda6  # make filesystem 
+
+    # Subvolume creation 
+    # ---------------------------------------------------------- 
+    [[ -d /tmp/btrfs ]] || mkdir -p /tmp/btrfs 
+    mount -t btrfs /dev/mapper/_dev_sda6 /tmp/btrfs 
+    btrfs subvolume create /tmp/btrfs/root 
+    btrfs subvolume create /tmp/btrfs/home 
+    umount /tmp/btrfs 
+
+    # Mount filesystems and subvolumes 
+    # ---------------------------------------------------------- 
+    opts_btrfs=defaults,x-mount.mkdir,compress=lzo,space_cache,autodefrag,ino...
+    mount -t btrfs -o subvol=root,$opts_btrfs /dev/mapper/_dev_sda6 /mnt 
+    opts_ext4=defaults,x-mount.mkdir 
+    mount -o $opts_ext4 -L SYSTEM /mnt/boot 
+    mount -t btrfs -o subvol=home,$opts_btrfs /dev/mapper/_dev_sda6 /mnt/home 
+
 ## Ok, so what else can it do? 
 
 * Handles many different storage configurations 
@@ -345,8 +441,8 @@ takes a comma separated list of drives:
 ### Command Examples: 
 
 Note that several of these examples use the example storage template named 
-'new-typical'. This is only one example file. See other samples in the 
-'templates' subdirectory, or write your own. 
+`new-typical`. This is only one example file. See other samples in the 
+`templates` subdirectory, or write your own. 
 
 **Examples:** Ways to reference the storage file - normal script output 
 
@@ -359,12 +455,12 @@ Note that several of these examples use the example storage template named
 
     storage-gen --commentsoff --quiet new-typical 
 
-**Example:** Live tree output with 'watch' 
+**Example:** Live tree output with `watch` 
 
 This is useful for split screen editing, with the storage definition file open 
 in an editor on one side and this live view in another. 
 
-    watch -cn1 'storage-gen --tree new-typical' 
+    watch -cn1 `storage-gen --tree new-typical` 
 
 **Example:** Save script file and show output together 
 
