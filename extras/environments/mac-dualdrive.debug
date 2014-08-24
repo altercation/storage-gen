@@ -1,0 +1,29 @@
+# STORAGE-GEN DEBUG LOG
+# DATE:         Sun Aug 24 16:49:00 PDT 2014
+# RUN AS:       root
+# ZSH VERSION:  5.0.5
+# COMMAND LINE: storage-gen '--debug -A'
+# SUBMIT TO:    storage-init@ethanschoonover.com
+
+# SUBMIT TO:    http://github.com/altercation/storage-gen/issues
+
+typeset -gA SYSTEM
+typeset -ga FILERAW
+
+:<< \
+'fstypes-----------------------------------------------------------------'
+fstypes present via mkfs: bfs btrfs cramfs ext2 ext3 ext4 ext4dev fat jfs minix msdos reiserfs vfat xfs
+fstypes-----------------------------------------------------------------
+
+typeset -A SYSTEM
+SYSTEM=(/dev/mapper/_dev_sda3,label home /dev/mapper/_dev_sda3,mountpoint /home /dev/mapper/_dev_sda3,size 425.3G /dev/mapper/_dev_sda3,type crypt /dev/mapper/_dev_sda3,uuid 3f21b023-191f-481c-95e0-94152e6c3fe8 /dev/sda,label archlinux /dev/sda,model 'Samsung SSD 840 ' /dev/sda,size 465.8G /dev/sda,type disk /dev/sda,uuid 0450431d-4101-432d-b497-010fb3c96a38 /dev/sda,vendor 'ATA     ' /dev/sda1,end 1050623 /dev/sda1,label EFI /dev/sda1,longcode C12A7328-F81F-11D2-BA4B-00A0C93EC93B /dev/sda1,mountpoint /boot /dev/sda1,partlabel EFI /dev/sda1,shortcode ef00 /dev/sda1,size 512M /dev/sda1,start 2048 /dev/sda1,type part /dev/sda1,uuid A961-17A4 /dev/sda2,end 84936703 /dev/sda2,label system /dev/sda2,longcode 0FC63DAF-8483-4772-8E79-3D69D8477DE4 /dev/sda2,mountpoint / /dev/sda2,partlabel system /dev/sda2,shortcode 8300 /dev/sda2,size 40G /dev/sda2,start 1050624 /dev/sda2,type part /dev/sda2,uuid c693f2de-5a82-4100-975d-743093363c3f /dev/sda3,end 976773134 /dev/sda3,label archlinux /dev/sda3,longcode 0FC63DAF-8483-4772-8E79-3D69D8477DE4 /dev/sda3,partlabel crypthome /dev/sda3,shortcode 8300 /dev/sda3,size 425.3G /dev/sda3,start 84936704 /dev/sda3,type part /dev/sda3,uuid ed2ae4a2-4717-4396-aae1-9d0a1ee0abca /dev/sdb,model 'Hitachi HTS72757' /dev/sdb,size 698.7G /dev/sdb,type disk /dev/sdb,vendor 'ATA     ' /dev/sdb1,end 1050623 /dev/sdb1,label EFI /dev/sdb1,longcode C12A7328-F81F-11D2-BA4B-00A0C93EC93B /dev/sdb1,partlabel 'EFI System Partition' /dev/sdb1,shortcode ef00 /dev/sdb1,size 200M /dev/sdb1,start 2048 /dev/sdb1,type part /dev/sdb1,uuid 67E3-17ED /dev/sdb2,end 84936703 /dev/sdb2,label Darwin /dev/sdb2,longcode 48465300-0000-11AA-AA11-00306543ECAC /dev/sdb2,partlabel Darwin /dev/sdb2,shortcode af00 /dev/sdb2,size 697.7G /dev/sdb2,start 1050624 /dev/sdb2,type part /dev/sdb2,uuid 145b4931-864c-3296-b66b-17c5d0413363 /dev/sdb3,end 976773134 /dev/sdb3,label 'Recovery HD' /dev/sdb3,longcode 426F6F74-0000-11AA-AA11-00306543ECAC /dev/sdb3,partlabel Apple_HFS_Untitled_2 /dev/sdb3,shortcode ab00 /dev/sdb3,size 747.9M /dev/sdb3,start 84936704 /dev/sdb3,type part /dev/sdb3,uuid cc6386fe-e2fa-3f63-a782-3a43283ed06d )
+
+# __SourceDebugLog
+# __CaptureEnvironment
+# __FileLocate
+
+
+# STORAGE-GEN ALERTS
+#
+# The following comment sections contain messages
+# output during the storage-gen processing

@@ -2327,7 +2327,7 @@ __CaptureEnvironment () {
         this will not affect you."
     fi
 
-    debugCapture $_return_array
+    debugCapture $return_array_
 }
 __FileLocate () {
 
