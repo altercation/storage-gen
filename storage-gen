@@ -4101,6 +4101,7 @@ __Usage () {
         print -- "${line}"; return }
         typeset c="${${_LL:-}[$((i+2))]##[[:blank:]]#}"
         [[ -n $c ]] && { print -- "${_LL::=${@}}"; return }
+        typeset -a e
         e=(
         '${'
         '${'
