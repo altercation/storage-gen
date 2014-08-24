@@ -168,7 +168,7 @@ For this example, we look at the script output.
 
 You can run this command now and use the same simulated machine environment 
 using the following command (run from the root of the storage-gen script 
-directory, or adjusting the --sourcedebug path to locate the correct file). 
+directory, or adjusting the `--sourcedebug` path to locate the correct file). 
 
     storage-gen keep-efi \ 
         --sourcedebug extras/environments/surfacepro3.debug \ 
