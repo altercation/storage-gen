@@ -363,6 +363,54 @@ If you wanted to be lazy about things, the following is equivalent
 A nice tool is the `--tree option` that would show you a structured preview of 
 what your template will create 
 
+## Choosing Drives and Partitions 
+
+### You have three ways to select a specific drive or partition: 
+
+1. Embed the information in the template 2. Include the information on the 
+command line 3. Let the script prompt you 
+
+### Embedding in a template 
+
+See the `templates/specific-devices` template for this example. You can skip 
+the reading in of the current environment with the following command: 
+
+    storage-gen specific-devices --skip 
+
+which will then create a script based **solely** on the drive and partition 
+data embedded in the template file below 
+
+    # this template is an example of specifying specific devices 
+    # in the template itself. this is a convenient way to prepare 
+    # a script on a system other than the target install platform 
+    # by running storage-gen with the --skip option (to skip 
+    # reading and using the live system environment) 
+
+    drive --devpath /dev/sda 
+        partition --partnum 2 --size 20G 
+            filesystem --fstype btrfs --mountpoint / 
+        partition --partnum 1 --size 200M --code ef00 --keep 
+            filesystem --fstype fat --mountpoint /boot 
+        partition --partnum 3 
+            filesystem --fstype btrfs --mountpoint /home 
+
+### Include the information on the command line 
+
+You could use the same template as above and change the drive to /dev/sdb by 
+simply including that on the command line: 
+
+    storage-gen specific-devices --skip --drives /dev/sdb 
+
+### Or you could include multiple drives for a template that had multiple drives: 
+
+    storage-gen multi-drives --skip --drives /dev/sdb,/dev/sdc 
+
+### Let the script prompt you 
+
+Finally, if the script cannot figure out what you want to do, it will prompt 
+you based on the current system environment (not possible if using the --skip 
+option). 
+
 ### Trust but Verify: 
 
 storage-gen is non-destructive. It merely outputs a script that can (and must) 

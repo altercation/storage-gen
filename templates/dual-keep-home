@@ -1,0 +1,8 @@
+# in this template example, we expect a system that has an
+# existing efi partition and an existing home partition which
+# we wish to preserve, replacing the system partition entirely
+# with a fresh install
+
+partition --keep --code ef00 --mountpoint /boot
+partition --encrypt --replace --label arch-system --mountpoint / --fstype btrfs
+partition --encrypt --keep --label home --mountpoint /home --fstype btrfs

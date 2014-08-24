@@ -1,0 +1,13 @@
+# this template is an example of specifying specific devices
+# in the template itself. this is a convenient way to prepare
+# a script on a system other than the target install platform
+# by running storage-gen with the --skip option (to skip
+# reading and using the live system environment)
+
+drive --devpath /dev/sda
+    partition --partnum 2 --size 20G
+        filesystem --fstype btrfs --mountpoint /
+    partition --partnum 1 --size 200M --code ef00 --keep
+        filesystem --fstype fat --mountpoint /boot
+    partition --partnum 3
+        filesystem --fstype btrfs --mountpoint /home

@@ -1,0 +1,10 @@
+# an example template with multiple drives, the latter of which
+# has no partitions but just a btrfs filesystem
+
+drive
+    partition --size 200M --code ef00
+        filesystem --fstype fat --mountpoint /boot
+    partition
+        filesystem --fstype btrfs --mountpoint /
+drive
+    filesystem --fstype btrfs --mountpoint /home
