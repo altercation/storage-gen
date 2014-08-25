@@ -4693,7 +4693,7 @@ genPartitions () {
                 #sgdisk_cmd+=" --largest-new=0"
                 sgdisk_msg="# create partition filling remaining space"
             elif [[ ${(L)active[size]} =~ "ram" ]]; then
-                sgdisk_cmd+=" --new=${active[partnum]}:0:"
+                sgdisk_cmd+=" --new=${active[partnum]}:0:+"
                 #moving to 0 in lieu of specific partnum
                 #sgdisk_cmd+=" --new=0:0:"
                 sgdisk_cmd+="$(( ${${(f)$(cat /proc/meminfo \
