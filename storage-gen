@@ -4479,6 +4479,7 @@ __AlphaWarning () {
     # user adds --alpha option
 
     # me on dev machine
+    return 0
     typeset DEVSTRING=es@skylla
     
     ${ALPHA:-false} || [[ -z ${${:-$USERNAME@$HOST}:#$DEVSTRING} ]] && return 0
