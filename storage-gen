@@ -2,8 +2,13 @@
 
 SUMMARY=$(<< \
 '------------------------------------------------------------------------------'
+## ALPHA TESTERS
+
 WARNING: This code is under live development RIGHT NOW...
 this notice will be removed once it reaches a beta release state.
+
+Alpha testers are welcome. It is best if the words sgdisk and lsblk do not
+immediately scare you.
 
 ARCH-BBS-THREAD: https://bbs.archlinux.org/viewtopic.php?pid=1450265
 
