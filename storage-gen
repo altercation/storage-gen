@@ -37,6 +37,11 @@ with the following command
     # curl -L http://links.ethanschoonover.com/storage-gen | zsh
     # storage-gen --help
 
+A sample command that will create a script (independent of your current
+system configuration) just to get a feeling for how this works is
+
+    # storage-gen demo --skip
+
 To create a configuration script for a typical new Arch Linux system, you
 could use the following commands (these only output text or tree information,
 **they do not execute any changes to the system**)
@@ -3551,7 +3556,8 @@ __AssignPartitions () {
         # complex partition removal, sorting, reassignment later
         # but that's getting tricky and best left to the user
         # to arrange manually
-        if [[ -n ${(P)${:-${storage_tree_}[(I)$drive*(keep|replace)]}} ]]
+        if [[ -n ${(P)${:-${storage_tree_}[(I)$drive*(keep|replace)]}} ]] \
+           && ! ${(P)skip_system_data_:-false}
         then
             AssignPartitions__EarmarkSystemPartitions   \
                 --system_data_      $system_data_       \
