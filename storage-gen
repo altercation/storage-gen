@@ -3363,7 +3363,7 @@ assignDrives__replaceAllDevpathOccurences () {
     fi
     typeset -a old_devpath_matches
     typeset -A drive_children
-    drive_children=(${(Pkv)${:-${storage_tree_}[(I)$drive_index*]}})
+    drive_children=(${(Pkvq-)${:-${storage_tree_}[(I)$drive_index*]}})
     old_devpath_matches=(${(k)drive_children[(R)$old_devpath*]})
     typeset -a e
     e=(
