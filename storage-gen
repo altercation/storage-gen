@@ -2310,10 +2310,10 @@ __CaptureEnvironment () {
         for drive in $all_drives
         do
             # if sgdisk chokes on the disk, skip it
-            if sgdisk ${partition%%[0-9]#} &>/dev/null
+            if sgdisk $drive &>/dev/null
             then
-        sgdump="$(sgdisk -p /dev/sda)}"
-        eval ${${${(@f)sgdump}:#[^[:space:]]*}//(#b)(#s) ##([0-9]##) ##([0-9]##) ##([0-9]##)*/$return_array_+=($drive$match[1],start $match[2] $drive$match[1],end $match[3])}
+                sgdump="$(sgdisk -p /dev/sda)}"
+                eval ${${${(@f)sgdump}:#[^[:space:]]*}//(#b)(#s) ##([0-9]##) ##([0-9]##) ##([0-9]##)*/$return_array_+=($drive$match[1],start $match[2] $drive$match[1],end $match[3])}
             fi
         done
 
