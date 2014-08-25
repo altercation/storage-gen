@@ -1,7 +1,8 @@
 # keep-efi template - preserves existing EFI partition
 # and makes new btrfs subvolume config for system and home
 
-partition --keep --code ef00 --mountpoint /boot
-filesystem --encrypt
-    subvolume --mountpoint /
-    subvolume --mountpoint /home
+partition --keep --code ef00 --fstype fat --mountpoint /boot
+encryption --label archcrypt
+    filesystem
+        subvolume --mountpoint /
+        subvolume --mountpoint /home
