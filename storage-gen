@@ -1732,8 +1732,8 @@ __InitializeRulesets () {
     # to the right.
     VALUES[type]="drive partition logical encryption swap filesystem subvolume"
 
-    FSTEST[fstype]="bfs btrfs cramfs ext2 ext3 ext4 ext4dev fat jfs minix
-                    msdos reiserfs vfat xfs"
+    FSTEST[fstype]="bfs btrfs cramfs ext2 ext3 ext4 ext4dev f2fs fat jfs
+                    minix msdos nilfs2 ntfs reiserfs vfat xfs"
     VALUES[fstype]=${${=${listing::=$(print ${:-=mkfs}.*)}}##$(print =mkfs).}
     typeset -a testfs valuesfs newfs missingfs
     valuesfs=(${=VALUES[fstype]}) testfs=(${=FSTEST[fstype]})

@@ -11,8 +11,8 @@ name=storage-gen
 cat > /tmp/${name}-bootstrap << EOF
 pacman --noconfirm -Sy git;
 cd;
-git clone https://github.com/altercation/${name}.git ${name};
-ln -s \$PWD/storage/${name} /usr/local/bin/${name};
+git clone https://github.com/altercation/$name.git $name;
+ln -s \$PWD/$name/$name /usr/local/bin/$name;
 $name --help
 EOF
 
